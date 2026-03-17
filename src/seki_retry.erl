@@ -39,13 +39,23 @@ run(Name, Fun, Opts) ->
 attempt(Name, _Fun, _Opts, _RetryOn, Attempt, MaxAttempts, LastError) when Attempt > MaxAttempts ->
     emit_exhausted(Name, MaxAttempts, LastError),
     {error, LastError};
-attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, _LastError) ->
+attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, LastError) ->
+    %% Check deadline before attempting
+    case seki_deadline:check() of
+        {error, deadline_exceeded} ->
+            emit_exhausted(Name, Attempt - 1, LastError),
+            {error, deadline_exceeded};
+        ok ->
+            do_attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts)
+    end.
+
+do_attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts) ->
     emit_attempt(Name, Attempt),
     try Fun() of
         Result ->
             case RetryOn(Result) of
                 true when Attempt < MaxAttempts ->
-                    Delay = compute_delay(Attempt, Opts),
+                    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
                     emit_retry(Name, Attempt, Result, Delay, Opts),
                     timer:sleep(Delay),
                     attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Result);
@@ -61,7 +71,7 @@ attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, _LastError) ->
             Error = {Class, Reason, Stacktrace},
             case RetryOn({error, Reason}) of
                 true when Attempt < MaxAttempts ->
-                    Delay = compute_delay(Attempt, Opts),
+                    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
                     emit_retry(Name, Attempt, Error, Delay, Opts),
                     timer:sleep(Delay),
                     attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Error);
@@ -89,6 +99,12 @@ raw_delay(exponential, BaseDelay, Attempt) ->
     BaseDelay * (1 bsl (Attempt - 1));
 raw_delay(linear, BaseDelay, Attempt) ->
     BaseDelay * Attempt.
+
+cap_delay_to_deadline(Delay) ->
+    case seki_deadline:time_remaining() of
+        infinity -> Delay;
+        Remaining -> min(Delay, max(0, Remaining))
+    end.
 
 apply_jitter(none, Delay, _Base) ->
     Delay;
