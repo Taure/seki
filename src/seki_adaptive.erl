@@ -163,6 +163,11 @@ handle_call({acquire, Pid}, _From, State) ->
             emit_acquire(State#state.name, InFlight + 1, trunc(Limit)),
             {reply, ok, NewState};
         false ->
+            logger:warning(
+                "Adaptive limiter ~p at capacity (limit=~p, in_flight=~p)",
+                [State#state.name, trunc(Limit), InFlight],
+                #{domain => [seki]}
+            ),
             emit_rejected(State#state.name, trunc(Limit)),
             {reply, {error, limit_reached}, State}
     end;
@@ -200,9 +205,14 @@ handle_cast({release, Pid, Outcome}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({'DOWN', MonRef, process, _Pid, _Reason}, State) ->
+handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
     case maps:take(MonRef, State#state.monitors) of
         {{_, StartTime}, NewMonitors} ->
+            logger:warning(
+                "Adaptive limiter ~p: process ~p died (~p), releasing slot",
+                [State#state.name, Pid, Reason],
+                #{domain => [seki]}
+            ),
             Duration = erlang:monotonic_time(millisecond) - StartTime,
             NewState0 = State#state{
                 in_flight = max(0, State#state.in_flight - 1),

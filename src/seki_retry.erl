@@ -53,12 +53,22 @@ run(Name, Fun, Opts) ->
 %%----------------------------------------------------------------------
 
 attempt(Name, _Fun, _Opts, _RetryOn, Attempt, MaxAttempts, LastError) when Attempt > MaxAttempts ->
+    logger:warning(
+        "Retry ~p exhausted after ~p attempts: ~p",
+        [Name, MaxAttempts, LastError],
+        #{domain => [seki]}
+    ),
     emit_exhausted(Name, MaxAttempts, LastError),
     {error, LastError};
 attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, LastError) ->
     %% Check deadline before attempting
     case seki_deadline:check() of
         {error, deadline_exceeded} ->
+            logger:warning(
+                "Retry ~p stopped: deadline exceeded after ~p attempts",
+                [Name, Attempt - 1],
+                #{domain => [seki]}
+            ),
             emit_exhausted(Name, Attempt - 1, LastError),
             {error, deadline_exceeded};
         ok ->
@@ -84,6 +94,11 @@ do_attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts) ->
             end
     catch
         Class:Reason:Stacktrace ->
+            logger:warning(
+                "Retry ~p attempt ~p exception: ~p:~p",
+                [Name, Attempt, Class, Reason],
+                #{domain => [seki]}
+            ),
             Error = {Class, Reason, Stacktrace},
             case RetryOn({error, Reason}) of
                 true when Attempt < MaxAttempts ->

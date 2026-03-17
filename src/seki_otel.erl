@@ -104,7 +104,12 @@ handle_rate_limit(Event, Measurements, Metadata, _Config) ->
                 otel_span:add_event(SpanCtx, <<"seki.rate_limit">>, AllAttrs)
         end
     catch
-        _:_ -> ok
+        _:OtelErr ->
+            logger:debug(
+                "seki_otel rate_limit handler failed: ~p",
+                [OtelErr],
+                #{domain => [seki]}
+            )
     end.
 
 handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
@@ -127,7 +132,12 @@ handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
                 otel_span:add_event(SpanCtx, <<"seki.breaker.state_change">>, AllAttrs)
         end
     catch
-        _:_ -> ok
+        _:OtelErr2 ->
+            logger:debug(
+                "seki_otel breaker_state_change handler failed: ~p",
+                [OtelErr2],
+                #{domain => [seki]}
+            )
     end.
 
 handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
@@ -150,7 +160,12 @@ handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
                 otel_span:add_event(SpanCtx, <<"seki.breaker.call">>, Attrs)
         end
     catch
-        _:_ -> ok
+        _:OtelErr3 ->
+            logger:debug(
+                "seki_otel breaker_call handler failed: ~p",
+                [OtelErr3],
+                #{domain => [seki]}
+            )
     end.
 
 handle_retry(Event, Measurements, Metadata, _Config) ->
@@ -171,7 +186,12 @@ handle_retry(Event, Measurements, Metadata, _Config) ->
                 otel_span:add_event(SpanCtx, <<"seki.retry">>, AllAttrs)
         end
     catch
-        _:_ -> ok
+        _:OtelErr4 ->
+            logger:debug(
+                "seki_otel retry handler failed: ~p",
+                [OtelErr4],
+                #{domain => [seki]}
+            )
     end.
 
 handle_bulkhead(Event, Measurements, Metadata, _Config) ->
@@ -192,7 +212,12 @@ handle_bulkhead(Event, Measurements, Metadata, _Config) ->
                 otel_span:add_event(SpanCtx, <<"seki.bulkhead">>, AllAttrs)
         end
     catch
-        _:_ -> ok
+        _:OtelErr5 ->
+            logger:debug(
+                "seki_otel bulkhead handler failed: ~p",
+                [OtelErr5],
+                #{domain => [seki]}
+            )
     end.
 
 %%----------------------------------------------------------------------
