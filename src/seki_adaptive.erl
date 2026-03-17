@@ -1,19 +1,21 @@
 -module(seki_adaptive).
 
-%% Adaptive concurrency limiter.
-%%
-%% Dynamically adjusts the maximum concurrency based on observed
-%% latency, inspired by Netflix's concurrency-limits library.
-%%
-%% Algorithms:
-%%   - AIMD (Additive Increase, Multiplicative Decrease)
-%%     Increases limit by 1 on success, halves it on failure/timeout.
-%%     Simple and stable. Good default.
-%%
-%%   - Gradient
-%%     Tracks long-term and short-term latency via exponential moving
-%%     averages. Increases limit when gradient < 1 (latency improving),
-%%     decreases when gradient > 1 (latency worsening).
+-moduledoc """
+Adaptive concurrency limiter inspired by Netflix's concurrency-limits library.
+
+Dynamically adjusts the maximum concurrency based on observed latency.
+
+Two algorithms:
+
+- **AIMD** — Additive Increase, Multiplicative Decrease. Simple, stable. Good default.
+- **Gradient** — Tracks long/short-term latency via exponential moving averages.
+  Increases limit when latency improves, decreases when it worsens.
+
+## Example
+
+    seki_adaptive:start_link(my_service, #{algorithm => aimd, initial_limit => 20}).
+    {ok, Result} = seki_adaptive:call(my_service, fun() -> do_work() end).
+""".
 
 -behaviour(gen_server).
 
@@ -75,21 +77,26 @@
 %% API
 %%----------------------------------------------------------------------
 
+-doc false.
 start_link(Name, Opts) ->
     gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
 
+-doc "Acquire a concurrency slot. Returns `{error, limit_reached}` if at capacity.".
 -spec acquire(atom()) -> ok | {error, limit_reached}.
 acquire(Name) ->
     gen_server:call(Name, {acquire, self()}).
 
+-doc "Release a slot and report the outcome. The outcome adjusts the concurrency limit.".
 -spec release(atom(), outcome()) -> ok.
 release(Name, Outcome) ->
     gen_server:cast(Name, {release, self(), Outcome}).
 
+-doc "Execute a function with automatic acquire/release and outcome reporting.".
 -spec call(atom(), fun(() -> term())) -> {ok, term()} | {error, limit_reached}.
 call(Name, Fun) ->
     call(Name, Fun, #{}).
 
+-doc "Execute a function with automatic acquire/release, outcome reporting, and options.".
 -spec call(atom(), fun(() -> term()), map()) -> {ok, term()} | {error, limit_reached}.
 call(Name, Fun, _Opts) ->
     case acquire(Name) of
@@ -107,6 +114,7 @@ call(Name, Fun, _Opts) ->
             Error
     end.
 
+-doc "Get current adaptive limiter status (current_limit, in_flight, available).".
 -spec status(atom()) ->
     #{
         current_limit := pos_integer(),

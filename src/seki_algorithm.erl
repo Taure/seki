@@ -1,9 +1,27 @@
 -module(seki_algorithm).
 
+-moduledoc """
+Rate limiting algorithm implementations.
+
+Four algorithms with different trade-offs:
+
+| Algorithm | Burst | State size | Best for |
+|-----------|-------|-----------|----------|
+| `token_bucket` | Yes | 2 values | APIs allowing bursts |
+| `sliding_window` | No | 3 values | General purpose |
+| `gcra` | Configurable | 1 value | High-performance, minimal state |
+| `leaky_bucket` | No | 2 values | Traffic shaping |
+
+Not called directly — used internally by `seki` via the limiter registry.
+""".
+
 -export([
     check/7,
     inspect/7
 ]).
+
+-doc "Perform a rate limit check, consuming tokens/capacity. Called by `seki:check/3`.".
+-doc #{since => <<"0.1.0">>}.
 
 %%----------------------------------------------------------------------
 %% Token Bucket
@@ -160,6 +178,7 @@ check(leaky_bucket, Backend, State, Key, Cost, Now, Config) ->
 %% Inspect (read-only, no side effects)
 %%----------------------------------------------------------------------
 
+-doc "Non-destructive rate limit check — reads state without consuming. Called by `seki:inspect/3`.".
 inspect(token_bucket, Backend, State, Key, Cost, Now, Config) ->
     #{limit := _Limit, window := Window, burst := Burst} = Config,
     RefillRate = Burst / Window,

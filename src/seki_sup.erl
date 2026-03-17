@@ -1,4 +1,5 @@
 -module(seki_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 

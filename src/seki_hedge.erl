@@ -1,12 +1,16 @@
 -module(seki_hedge).
 
-%% Request hedging — send redundant requests and use the first response.
-%%
-%% Reduces tail latency by racing multiple attempts. After a configurable
-%% delay, a backup request is sent. The first response wins and the
-%% other is cancelled.
-%%
-%% Inspired by Google's "The Tail at Scale" paper.
+-moduledoc """
+Request hedging — race redundant requests and use the first response.
+
+Reduces tail latency by spawning backup requests after a delay.
+The first successful response wins; others are killed.
+Inspired by Google's "The Tail at Scale" paper.
+
+## Example
+
+    seki_hedge:race(fun() -> http:get(Url) end, #{delay => 100, max_extra => 1}).
+""".
 
 -export([
     race/2,
@@ -20,12 +24,12 @@
 
 -export_type([hedge_opts/0]).
 
-%% Race multiple invocations of Fun, returning the first successful result.
-%% After `delay` ms, spawns a backup. At most `max_extra` backups are sent.
+-doc "Race multiple invocations, returning the first success. Spawns backups after `delay` ms.".
 -spec race(fun(() -> term()), hedge_opts()) -> {ok, term()} | {error, all_failed}.
 race(Fun, Opts) ->
     race(undefined, Fun, Opts).
 
+-doc "Race with a name for telemetry events.".
 -spec race(atom() | undefined, fun(() -> term()), hedge_opts()) ->
     {ok, term()} | {error, all_failed}.
 race(Name, Fun, Opts) ->

@@ -1,16 +1,21 @@
 -module(seki_deadline).
 
-%% Deadline propagation for request processing.
-%%
-%% Uses the process dictionary to carry deadlines through the call stack.
-%% Supports cross-process propagation via explicit get/set.
-%%
-%% Deadlines represent an absolute point in monotonic time by which
-%% the current operation must complete. Once a deadline is reached,
-%% subsequent calls to `check/0` return `{error, deadline_exceeded}`.
-%%
-%% For cross-service propagation, convert to/from HTTP headers using
-%% `to_header/0` and `from_header/1`.
+-moduledoc """
+Deadline propagation for request processing.
+
+Uses the process dictionary to carry deadlines through the call stack.
+Multiple deadlines are merged by taking the tighter (earlier) one.
+Integrates with `seki_retry` to stop retrying when time runs out.
+
+For cross-service propagation, convert to/from HTTP headers using
+`to_header/0` and `from_header/1`.
+
+## Example
+
+    seki_deadline:set(5000),  %% 5 second deadline
+    ok = seki_deadline:check(),
+    {ok, <<"3200">>} = seki_deadline:to_header().  %% remaining ms
+""".
 
 -export([
     set/1,
@@ -32,13 +37,13 @@
 %% API
 %%----------------------------------------------------------------------
 
-%% Set a deadline relative to now (timeout in ms).
+-doc "Set a deadline relative to now (timeout in ms). Takes the tighter of existing and new deadlines.".
 -spec set(pos_integer()) -> ok.
 set(TimeoutMs) ->
     Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
     set_abs(Deadline).
 
-%% Set an absolute deadline (monotonic time in ms).
+-doc "Set an absolute deadline (monotonic time in ms).".
 -spec set_abs(integer()) -> ok.
 set_abs(Deadline) ->
     case erlang:get(?DEADLINE_KEY) of
@@ -51,7 +56,7 @@ set_abs(Deadline) ->
             ok
     end.
 
-%% Get the current deadline, if any.
+-doc "Get the current deadline, or `undefined` if none is set.".
 -spec get() -> {ok, integer()} | undefined.
 get() ->
     case erlang:get(?DEADLINE_KEY) of
@@ -59,8 +64,7 @@ get() ->
         Deadline -> {ok, Deadline}
     end.
 
-%% Check if the deadline has been reached.
-%% Returns `ok` if there is still time or no deadline is set.
+-doc "Check if the deadline has been reached. Returns `ok` if there is still time or no deadline is set.".
 -spec check() -> ok | {error, deadline_exceeded}.
 check() ->
     case erlang:get(?DEADLINE_KEY) of
@@ -74,8 +78,7 @@ check() ->
             end
     end.
 
-%% Get the remaining time in milliseconds.
-%% Returns `infinity` if no deadline is set.
+-doc "Get the remaining time in milliseconds, or `infinity` if no deadline is set.".
 -spec time_remaining() -> non_neg_integer() | infinity.
 time_remaining() ->
     case erlang:get(?DEADLINE_KEY) of
@@ -86,7 +89,7 @@ time_remaining() ->
             max(0, Deadline - Now)
     end.
 
-%% Check if the deadline has been reached (boolean).
+-doc "Check if the deadline has been reached (boolean).".
 -spec reached() -> boolean().
 reached() ->
     case check() of
@@ -94,13 +97,13 @@ reached() ->
         {error, deadline_exceeded} -> true
     end.
 
-%% Clear the current deadline.
+-doc "Clear the current deadline.".
 -spec clear() -> ok.
 clear() ->
     erlang:erase(?DEADLINE_KEY),
     ok.
 
-%% Run a function with a deadline. Clears the deadline after completion.
+-doc "Run a function with a deadline. Clears the deadline after completion.".
 -spec run(pos_integer(), fun(() -> term())) ->
     {ok, term()} | {error, deadline_exceeded}.
 run(TimeoutMs, Fun) ->
@@ -121,9 +124,7 @@ run(TimeoutMs, Fun) ->
 %% Cross-service propagation via HTTP headers
 %%----------------------------------------------------------------------
 
-%% Convert current deadline to an HTTP header value.
-%% Returns the remaining time in milliseconds as a binary string.
-%% Suitable for `X-Deadline-Remaining` or `grpc-timeout` style headers.
+-doc "Convert current deadline to an HTTP header value (remaining ms as binary).".
 -spec to_header() -> {ok, binary()} | undefined.
 to_header() ->
     case time_remaining() of
@@ -131,7 +132,7 @@ to_header() ->
         Remaining -> {ok, integer_to_binary(Remaining)}
     end.
 
-%% Set a deadline from an HTTP header value (remaining ms as binary).
+-doc "Set a deadline from an HTTP header value (remaining ms as binary).".
 -spec from_header(binary()) -> ok | {error, invalid_header}.
 from_header(Value) when is_binary(Value) ->
     try binary_to_integer(Value) of
@@ -146,8 +147,7 @@ from_header(Value) when is_binary(Value) ->
 from_header(_) ->
     {error, invalid_header}.
 
-%% Propagate the current deadline to another process.
-%% Call from the source process, pass the result to the target.
+-doc "Propagate the current deadline to another process via message passing.".
 -spec propagate(pid()) -> ok.
 propagate(TargetPid) ->
     case ?MODULE:get() of

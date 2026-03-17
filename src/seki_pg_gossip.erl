@@ -1,10 +1,14 @@
 -module(seki_pg_gossip).
 
-%% Gossip process for distributed rate limiting.
-%%
-%% Joins a pg group and periodically broadcasts local ETS state
-%% to all peers. Receives state from peers and merges using
-%% last-writer-wins based on timestamps.
+-moduledoc """
+Gossip process for distributed rate limiting.
+
+Joins a `pg` group and periodically broadcasts local ETS state to all peers.
+Merges received state using algorithm-aware strategies (max counts for sliding
+windows, lower tokens for token buckets, higher TAT for GCRA).
+
+Used internally by `seki_backend_pg`.
+""".
 
 -behaviour(gen_server).
 

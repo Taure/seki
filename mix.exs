@@ -11,7 +11,8 @@ defmodule Seki.MixProject do
       language: :erlang,
       description: description(),
       package: package(),
-      deps: deps()
+      deps: deps(),
+      docs: docs()
     ]
   end
 
@@ -31,7 +32,28 @@ defmodule Seki.MixProject do
 
   defp deps do
     [
-      {:telemetry, "~> 1.3"}
+      {:telemetry, "~> 1.3"},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md", "LICENSE.md"],
+      source_url: "https://github.com/Taure/seki",
+      groups_for_modules: [
+        "Core API": [:seki, :seki_breaker, :seki_bulkhead, :seki_retry, :seki_deadline],
+        "Rate Limiting": [
+          :seki_algorithm,
+          :seki_backend,
+          :seki_backend_ets,
+          :seki_backend_pg,
+          :seki_pg_gossip
+        ],
+        "Advanced Patterns": [:seki_adaptive, :seki_shed, :seki_hedge, :seki_health],
+        Instrumentation: [:seki_otel]
+      ]
     ]
   end
 end

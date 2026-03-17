@@ -1,5 +1,23 @@
 -module(seki).
 
+-moduledoc """
+Main API for Seki resilience primitives.
+
+Provides rate limiting with four algorithms (token bucket, sliding window, GCRA,
+leaky bucket), circuit breaking with configurable failure/slow-call thresholds,
+and a combined `execute/3` that checks rate limits before calling through a breaker.
+
+## Erlang
+
+    seki:new_limiter(my_api, #{algorithm => sliding_window, limit => 100, window => 60000}).
+    seki:check(my_api, UserId).
+
+## Elixir
+
+    :seki.new_limiter(:my_api, %{algorithm: :sliding_window, limit: 100, window: 60_000})
+    :seki.check(:my_api, user_id)
+""".
+
 %% Rate limiter API
 -export([
     new_limiter/2,
@@ -80,14 +98,17 @@
 %% Rate Limiter API
 %%----------------------------------------------------------------------
 
+-doc "Create a new rate limiter with the given algorithm and options.".
 -spec new_limiter(limiter_name(), limiter_opts()) -> ok | {error, term()}.
 new_limiter(Name, Opts) ->
     seki_limiter_registry:register(Name, Opts).
 
+-doc "Check if a request is allowed for the given key (cost = 1).".
 -spec check(limiter_name(), key()) -> check_result().
 check(Name, Key) ->
     check(Name, Key, 1).
 
+-doc "Check if a request with a custom cost is allowed for the given key.".
 -spec check(limiter_name(), key(), pos_integer()) -> check_result().
 check(Name, Key, Cost) ->
     {Algorithm, Backend, BackendState, Config} = seki_limiter_registry:lookup(Name),
@@ -96,21 +117,25 @@ check(Name, Key, Cost) ->
     emit_check_telemetry(Name, Key, Cost, Result),
     Result.
 
+-doc "Non-destructive check — read current state without consuming tokens.".
 -spec inspect(limiter_name(), key()) -> check_result().
 inspect(Name, Key) ->
     inspect(Name, Key, 1).
 
+-doc "Non-destructive check with a custom cost.".
 -spec inspect(limiter_name(), key(), pos_integer()) -> check_result().
 inspect(Name, Key, Cost) ->
     {Algorithm, Backend, BackendState, Config} = seki_limiter_registry:lookup(Name),
     Now = erlang:monotonic_time(millisecond),
     seki_algorithm:inspect(Algorithm, Backend, BackendState, Key, Cost, Now, Config).
 
+-doc "Reset the rate limit state for a key.".
 -spec reset(limiter_name(), key()) -> ok.
 reset(Name, Key) ->
     {_Algorithm, Backend, BackendState, _Config} = seki_limiter_registry:lookup(Name),
     Backend:delete(BackendState, Key).
 
+-doc "Delete a rate limiter and clean up its backend state.".
 -spec delete_limiter(limiter_name()) -> ok.
 delete_limiter(Name) ->
     seki_limiter_registry:unregister(Name).
@@ -119,26 +144,32 @@ delete_limiter(Name) ->
 %% Circuit Breaker API
 %%----------------------------------------------------------------------
 
+-doc "Create a new circuit breaker with the given options.".
 -spec new_breaker(breaker_name(), breaker_opts()) -> {ok, pid()} | {error, term()}.
 new_breaker(Name, Opts) ->
     seki_breaker_sup:start_breaker(Name, Opts).
 
+-doc "Execute a function through a circuit breaker.".
 -spec call(breaker_name(), fun(() -> term())) -> call_result().
 call(Name, Fun) ->
     call(Name, Fun, #{}).
 
+-doc "Execute a function through a circuit breaker with options.".
 -spec call(breaker_name(), fun(() -> term()), map()) -> call_result().
 call(Name, Fun, CallOpts) ->
     seki_breaker:call(Name, Fun, CallOpts).
 
+-doc "Get the current state of a circuit breaker.".
 -spec state(breaker_name()) -> closed | open | half_open.
 state(Name) ->
     seki_breaker:get_state(Name).
 
+-doc "Reset a circuit breaker to closed state.".
 -spec reset_breaker(breaker_name()) -> ok.
 reset_breaker(Name) ->
     seki_breaker:reset(Name).
 
+-doc "Delete a circuit breaker and stop its process.".
 -spec delete_breaker(breaker_name()) -> ok | {error, term()}.
 delete_breaker(Name) ->
     seki_breaker_sup:stop_breaker(Name).
@@ -147,6 +178,7 @@ delete_breaker(Name) ->
 %% Combined API
 %%----------------------------------------------------------------------
 
+-doc "Check rate limit then execute through circuit breaker. Returns `{error, {rate_limited, Info}}` if denied.".
 -spec execute(breaker_name(), limiter_name(), fun(() -> term())) ->
     call_result() | {error, rate_limited}.
 execute(Breaker, Limiter, Fun) ->

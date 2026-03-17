@@ -1,9 +1,13 @@
 -module(seki_otel).
 
-%% OpenTelemetry instrumentation for Seki.
-%%
-%% Subscribes to seki telemetry events and creates OTel spans/metrics.
-%% Add as a dependency and call `seki_otel:setup/0` in your application start.
+-moduledoc """
+OpenTelemetry instrumentation for Seki.
+
+Subscribes to all Seki telemetry events and adds OTel span events with
+`seki.*` attributes. Requires `opentelemetry` as a dependency.
+
+Call `seki_otel:setup/0` in your application start callback.
+""".
 
 -export([
     setup/0,
@@ -21,10 +25,12 @@
 
 -define(HANDLER_ID_PREFIX, seki_otel).
 
+-doc "Attach OTel handlers to all Seki telemetry events.".
 -spec setup() -> ok.
 setup() ->
     setup(#{}).
 
+-doc "Attach OTel handlers with options.".
 -spec setup(map()) -> ok.
 setup(_Opts) ->
     Events = [
@@ -50,6 +56,7 @@ setup(_Opts) ->
     ),
     ok.
 
+-doc "Detach all OTel handlers.".
 -spec teardown() -> ok.
 teardown() ->
     Events = [

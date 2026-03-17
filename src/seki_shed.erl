@@ -1,26 +1,26 @@
 -module(seki_shed).
 
-%% Load shedding with CoDel (Controlled Delay) and priority-based admission.
-%%
-%% CoDel tracks how long requests spend queued (sojourn time). If sojourn
-%% time consistently exceeds a target (e.g., 5ms), CoDel begins dropping
-%% requests at an increasing rate. When sojourn time returns to target,
-%% dropping stops immediately.
-%%
-%% Priority-based shedding assigns each request a priority level (0-3).
-%% Under load, lower-priority requests are shed first:
-%%   P0 (critical)  — never shed
-%%   P1 (important) — shed at 90% capacity
-%%   P2 (normal)    — shed at 80% capacity
-%%   P3 (low)       — shed at 70% capacity
-%%
-%% Usage:
-%%   seki_shed:start_link(my_shed, #{...}).
-%%   case seki_shed:admit(my_shed, Priority) of
-%%       ok -> handle_request();
-%%       {error, shed} -> reply_503()
-%%   end.
-%%   seki_shed:complete(my_shed, Duration).
+-moduledoc """
+Load shedding with CoDel (Controlled Delay) and priority-based admission.
+
+CoDel tracks sojourn time and begins dropping requests when it consistently
+exceeds a target. Priority levels (0-3) control which requests are shed first:
+
+| Priority | Level | Shed threshold |
+|----------|-------|---------------|
+| 0 | Critical | Never shed |
+| 1 | Important | 90% capacity |
+| 2 | Normal | 80% capacity |
+| 3 | Low | 70% capacity |
+
+## Example
+
+    seki_shed:start_link(my_shed, #{target => 5, max_in_flight => 1000}).
+    case seki_shed:admit(my_shed, 2) of
+        ok -> handle_request(), seki_shed:complete(my_shed, Duration);
+        {error, shed} -> reply_503()
+    end.
+""".
 
 -behaviour(gen_server).
 
@@ -83,21 +83,26 @@
 %% API
 %%----------------------------------------------------------------------
 
+-doc false.
 start_link(Name, Opts) ->
     gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
 
+-doc "Admit a request with default priority (P2 = normal).".
 -spec admit(atom()) -> ok | {error, shed}.
 admit(Name) ->
     admit(Name, 2).
 
+-doc "Admit a request with the given priority (0 = critical, 3 = low).".
 -spec admit(atom(), priority()) -> ok | {error, shed}.
 admit(Name, Priority) ->
     gen_server:call(Name, {admit, Priority}).
 
+-doc "Signal request completion with duration in ms. Updates CoDel state.".
 -spec complete(atom(), non_neg_integer()) -> ok.
 complete(Name, DurationMs) ->
     gen_server:cast(Name, {complete, DurationMs}).
 
+-doc "Get current load shedder status (in_flight, utilization, dropping, stats).".
 -spec status(atom()) -> map().
 status(Name) ->
     gen_server:call(Name, status).
