@@ -60,6 +60,83 @@ rate_limit_through_pg() ->
     {deny, _} = seki:check(pg_limiter, user1),
     seki:delete_limiter(pg_limiter).
 
+%% Test gossip gen_server directly
+gossip_test_() ->
+    {setup, fun setup/0, fun cleanup/1, [
+        {"gossip start and stop", fun gossip_start_stop/0},
+        {"gossip receives merge cast", fun gossip_merge_cast/0},
+        {"gossip broadcasts to peers", fun gossip_broadcast/0}
+    ]}.
+
+gossip_start_stop() ->
+    ok = ensure_pg_scope(seki_pg),
+    Tab = ets:new(gossip_test_1, [set, public]),
+    {ok, Pid} = seki_pg_gossip:start_link(#{
+        scope => seki_pg,
+        group => gossip_test_group_1,
+        tab => Tab,
+        interval => 60000
+    }),
+    ?assert(is_process_alive(Pid)),
+    %% Should have joined the pg group
+    Members = pg:get_members(seki_pg, gossip_test_group_1),
+    ?assert(lists:member(Pid, Members)),
+    seki_pg_gossip:stop(Pid),
+    ?assertNot(is_process_alive(Pid)),
+    ets:delete(Tab).
+
+gossip_merge_cast() ->
+    ok = ensure_pg_scope(seki_pg),
+    Tab = ets:new(gossip_test_2, [set, public]),
+    ets:insert(Tab, {key1, 100}),
+    {ok, Pid} = seki_pg_gossip:start_link(#{
+        scope => seki_pg,
+        group => gossip_test_group_2,
+        tab => Tab,
+        interval => 60000
+    }),
+    %% Send merge cast with higher GCRA TAT
+    gen_server:cast(Pid, {merge, [{key1, 200}]}),
+    timer:sleep(20),
+    [{key1, TAT}] = ets:lookup(Tab, key1),
+    ?assertEqual(200, TAT),
+    seki_pg_gossip:stop(Pid),
+    ets:delete(Tab).
+
+gossip_broadcast() ->
+    ok = ensure_pg_scope(seki_pg),
+    Tab1 = ets:new(gossip_test_3a, [set, public]),
+    Tab2 = ets:new(gossip_test_3b, [set, public]),
+    ets:insert(Tab1, {key1, 500}),
+    {ok, Pid1} = seki_pg_gossip:start_link(#{
+        scope => seki_pg,
+        group => gossip_test_group_3,
+        tab => Tab1,
+        interval => 50
+    }),
+    {ok, Pid2} = seki_pg_gossip:start_link(#{
+        scope => seki_pg,
+        group => gossip_test_group_3,
+        tab => Tab2,
+        interval => 60000
+    }),
+    %% Wait for Pid1 to gossip to Pid2
+    timer:sleep(100),
+    case ets:lookup(Tab2, key1) of
+        [{key1, Val}] -> ?assertEqual(500, Val);
+        [] -> ?assert(false)
+    end,
+    seki_pg_gossip:stop(Pid1),
+    seki_pg_gossip:stop(Pid2),
+    ets:delete(Tab1),
+    ets:delete(Tab2).
+
+ensure_pg_scope(Scope) ->
+    case pg:start(Scope) of
+        {ok, _} -> ok;
+        {error, {already_started, _}} -> ok
+    end.
+
 %% Test merge logic directly
 merge_sliding_same() ->
     Tab = ets:new(merge_test_1, [set, public]),
