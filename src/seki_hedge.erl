@@ -65,11 +65,17 @@ wait_or_hedge(Fun, Parent, Ref, Delay, MaxExtra, Pids, ExtraCount) ->
             %% Got a result — kill remaining
             kill_others(Pids, FromPid),
             {ok, Result};
-        {hedge_result, Ref, FromPid, {error, _}} ->
+        {hedge_result, Ref, FromPid, {error, Err}} ->
             %% One attempt failed — wait for others if any
+            logger:warning(
+                "Hedge request failed: ~p, ~p remaining",
+                [Err, length(Pids) - 1],
+                #{domain => [seki]}
+            ),
             RemainingPids = lists:delete(FromPid, Pids),
             case RemainingPids of
                 [] ->
+                    logger:error("Hedge: all attempts failed", #{domain => [seki]}),
                     {error, all_failed};
                 _ ->
                     wait_for_remaining(Ref, RemainingPids)
@@ -78,6 +84,11 @@ wait_or_hedge(Fun, Parent, Ref, Delay, MaxExtra, Pids, ExtraCount) ->
         case ExtraCount < MaxExtra of
             true ->
                 %% Spawn backup
+                logger:notice(
+                    "Hedge: primary timed out after ~pms, spawning backup ~p/~p",
+                    [Delay, ExtraCount + 1, MaxExtra],
+                    #{domain => [seki]}
+                ),
                 NewPid = spawn_monitor_fun(Fun, Parent, Ref),
                 wait_or_hedge(
                     Fun, Parent, Ref, Delay, MaxExtra, [NewPid | Pids], ExtraCount + 1

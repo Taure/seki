@@ -22,15 +22,50 @@ start_child(Module, Name, Opts) ->
         restart => transient,
         shutdown => 5000
     },
-    supervisor:start_child(?MODULE, ChildSpec).
+    case supervisor:start_child(?MODULE, ChildSpec) of
+        {ok, Pid} = Ok ->
+            logger:info(
+                "Started ~p:~p (pid=~p)",
+                [Module, Name, Pid],
+                #{domain => [seki]}
+            ),
+            Ok;
+        {error, Reason} = Err ->
+            logger:error(
+                "Failed to start ~p:~p: ~p",
+                [Module, Name, Reason],
+                #{domain => [seki]}
+            ),
+            Err
+    end.
 
 -spec stop_child(atom()) -> ok | {error, term()}.
 stop_child(Name) ->
     case supervisor:terminate_child(?MODULE, Name) of
         ok ->
-            supervisor:delete_child(?MODULE, Name);
-        Error ->
-            Error
+            case supervisor:delete_child(?MODULE, Name) of
+                ok ->
+                    logger:info(
+                        "Stopped supervised process ~p",
+                        [Name],
+                        #{domain => [seki]}
+                    ),
+                    ok;
+                {error, Reason} = Err ->
+                    logger:error(
+                        "Failed to delete child spec ~p: ~p",
+                        [Name, Reason],
+                        #{domain => [seki]}
+                    ),
+                    Err
+            end;
+        {error, Reason} = Err ->
+            logger:error(
+                "Failed to terminate ~p: ~p",
+                [Name, Reason],
+                #{domain => [seki]}
+            ),
+            Err
     end.
 
 init([]) ->

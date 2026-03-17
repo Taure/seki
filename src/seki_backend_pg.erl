@@ -57,6 +57,11 @@ init(Opts) ->
         tab => Tab,
         interval => GossipInterval
     }),
+    logger:info(
+        "Distributed backend started (scope=~p, group=~p, gossip_interval=~pms)",
+        [Scope, Group, GossipInterval],
+        #{domain => [seki]}
+    ),
     {ok, #state{
         local_tab = Tab,
         gossip_pid = GossipPid,
@@ -106,6 +111,10 @@ cleanup(#state{local_tab = Tab}, OlderThan) ->
     ok.
 
 terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
+    logger:info(
+        "Distributed backend shutting down, stopping gossip",
+        #{domain => [seki]}
+    ),
     seki_pg_gossip:stop(GossipPid),
     ets:delete(Tab),
     ok.

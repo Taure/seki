@@ -49,6 +49,11 @@ stop(Pid) ->
 
 init(#{scope := Scope, group := Group, tab := Tab, interval := Interval}) ->
     ok = pg:join(Scope, Group, self()),
+    logger:info(
+        "Gossip joined pg group ~p:~p (interval=~pms)",
+        [Scope, Group, Interval],
+        #{domain => [seki]}
+    ),
     schedule_gossip(Interval),
     {ok, #state{
         scope = Scope,
@@ -73,7 +78,12 @@ handle_info(gossip, #state{scope = Scope, group = Group, tab = Tab, interval = I
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, #state{scope = Scope, group = Group}) ->
+terminate(Reason, #state{scope = Scope, group = Group}) ->
+    logger:info(
+        "Gossip leaving pg group ~p:~p (reason=~p)",
+        [Scope, Group, Reason],
+        #{domain => [seki]}
+    ),
     pg:leave(Scope, Group, self()),
     ok.
 
