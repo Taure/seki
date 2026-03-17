@@ -249,14 +249,38 @@ adjust_aimd(_, _Duration, State) ->
     #state{current_limit = Limit, backoff_ratio = Ratio, min_limit = MinLimit} = State,
     %% Multiplicative decrease
     NewLimit = max(MinLimit * 1.0, Limit * Ratio),
-    emit_limit_change(State#state.name, trunc(Limit), trunc(NewLimit)),
+    OldInt = trunc(Limit),
+    NewInt = trunc(NewLimit),
+    case OldInt =/= NewInt of
+        true ->
+            logger:notice(
+                "Adaptive limiter ~p: limit decreased ~p -> ~p",
+                [State#state.name, OldInt, NewInt],
+                #{domain => [seki]}
+            );
+        false ->
+            ok
+    end,
+    emit_limit_change(State#state.name, OldInt, NewInt),
     State#state{current_limit = NewLimit}.
 
 %% Gradient: Track latency trend
 adjust_gradient(drop, _Duration, State) ->
     #state{current_limit = Limit, min_limit = MinLimit} = State,
     NewLimit = max(MinLimit * 1.0, Limit * 0.9),
-    emit_limit_change(State#state.name, trunc(Limit), trunc(NewLimit)),
+    OldInt = trunc(Limit),
+    NewInt = trunc(NewLimit),
+    case OldInt =/= NewInt of
+        true ->
+            logger:notice(
+                "Adaptive limiter ~p: limit decreased ~p -> ~p (drop)",
+                [State#state.name, OldInt, NewInt],
+                #{domain => [seki]}
+            );
+        false ->
+            ok
+    end,
+    emit_limit_change(State#state.name, OldInt, NewInt),
     State#state{current_limit = NewLimit};
 adjust_gradient(error, _Duration, State) ->
     %% Errors don't change limit in gradient mode (only latency matters)
