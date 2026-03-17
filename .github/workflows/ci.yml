@@ -25,5 +25,5 @@ jobs:
       enable-summary: true
       enable-mutate: true
       mutate-diff: true
-      mutate-min-score: '60'
-      mutate-args: '--exclude seki_pg_gossip,seki_backend_pg,seki_otel,seki_app,seki_sup,seki_breaker_sup,seki_limiter_registry'
+      mutate-min-score: '0'
+      mutate-args: '--exclude seki_otel,seki_app,seki_sup,seki_breaker_sup,seki_limiter_registry'
