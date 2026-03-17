@@ -111,8 +111,8 @@ emit_attempt(Name, Attempt) ->
         #{name => Name}
     ).
 
-emit_retry(Name, Attempt, Error, Delay, _Opts) ->
-    OnRetry = maps:get(on_retry, _Opts, undefined),
+emit_retry(Name, Attempt, Error, Delay, Opts) ->
+    OnRetry = maps:get(on_retry, Opts, undefined),
     case OnRetry of
         undefined -> ok;
         Fun when is_function(Fun, 3) -> Fun(Attempt, Error, Delay)
