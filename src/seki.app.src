@@ -1,0 +1,16 @@
+{application, seki, [
+    {description,
+        "Resilience library for the BEAM - circuit breaking, rate limiting, bulkheads, and retry"},
+    {vsn, "git"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        telemetry
+    ]},
+    {mod, {seki_app, []}},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/Taure/seki"}]}
+]}.
