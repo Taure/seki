@@ -139,9 +139,11 @@ from_header(Value) when is_binary(Value) ->
         Ms when Ms > 0 ->
             set(Ms);
         _ ->
+            logger:warning("Invalid deadline header value: ~p", [Value], #{domain => [seki]}),
             {error, invalid_header}
     catch
         _:_ ->
+            logger:warning("Invalid deadline header value: ~p", [Value], #{domain => [seki]}),
             {error, invalid_header}
     end;
 from_header(_) ->

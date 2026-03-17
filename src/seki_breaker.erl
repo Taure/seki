@@ -120,6 +120,11 @@ closed({call, From}, {call, Fun}, Data) ->
             NewData = record_outcome(Outcome, Data),
             case should_trip(NewData) of
                 true ->
+                    logger:warning(
+                        "Circuit breaker ~p tripped: closed -> open",
+                        [Name],
+                        #{domain => [seki]}
+                    ),
                     emit_state_change(Name, closed, open),
                     {next_state, open, reset_outcomes(NewData), [
                         {reply, From, wrap_result(Result)},
@@ -131,10 +136,20 @@ closed({call, From}, {call, Fun}, Data) ->
     catch
         Class:Reason:Stacktrace ->
             Duration = erlang:monotonic_time(millisecond) - Start,
+            logger:error(
+                "Circuit breaker ~p call exception: ~p:~p",
+                [Name, Class, Reason],
+                #{domain => [seki]}
+            ),
             emit_call_telemetry(Name, closed, error, Duration),
             NewData = record_outcome(error, Data),
             case should_trip(NewData) of
                 true ->
+                    logger:warning(
+                        "Circuit breaker ~p tripped: closed -> open",
+                        [Name],
+                        #{domain => [seki]}
+                    ),
                     emit_state_change(Name, closed, open),
                     {next_state, open, reset_outcomes(NewData), [
                         {reply, From, {error, {Class, Reason, Stacktrace}}},
@@ -162,6 +177,11 @@ open(cast, reset, Data) ->
     emit_state_change(Data#data.name, open, closed),
     {next_state, closed, reset_outcomes(Data)};
 open(state_timeout, try_half_open, Data) ->
+    logger:notice(
+        "Circuit breaker ~p: open -> half_open, probing",
+        [Data#data.name],
+        #{domain => [seki]}
+    ),
     emit_state_change(Data#data.name, open, half_open),
     {next_state, half_open, Data#data{half_open_count = 0}}.
 
@@ -201,7 +221,11 @@ half_open({call, From}, {call, Fun}, Data) ->
                         ok ->
                             case NewData2#data.half_open_count >= MaxRequests of
                                 true ->
-                                    %% All probes succeeded, close
+                                    logger:notice(
+                                        "Circuit breaker ~p recovered: half_open -> closed",
+                                        [Name],
+                                        #{domain => [seki]}
+                                    ),
                                     emit_state_change(Name, half_open, closed),
                                     {next_state, closed, reset_outcomes(NewData2), [
                                         {reply, From, wrap_result(Result)}
@@ -210,7 +234,11 @@ half_open({call, From}, {call, Fun}, Data) ->
                                     {keep_state, NewData2, [{reply, From, wrap_result(Result)}]}
                             end;
                         _ ->
-                            %% Probe failed, back to open
+                            logger:warning(
+                                "Circuit breaker ~p probe failed (~p), reopening",
+                                [Name, Outcome],
+                                #{domain => [seki]}
+                            ),
                             emit_state_change(Name, half_open, open),
                             {next_state, open, reset_outcomes(NewData2), [
                                 {reply, From, wrap_result(Result)},
@@ -220,6 +248,11 @@ half_open({call, From}, {call, Fun}, Data) ->
             catch
                 Class:Reason:Stacktrace ->
                     Duration = erlang:monotonic_time(millisecond) - Start,
+                    logger:warning(
+                        "Circuit breaker ~p probe exception: ~p:~p, reopening",
+                        [Name, Class, Reason],
+                        #{domain => [seki]}
+                    ),
                     emit_call_telemetry(Name, half_open, error, Duration),
                     emit_state_change(Name, half_open, open),
                     {next_state, open, reset_outcomes(NewData), [

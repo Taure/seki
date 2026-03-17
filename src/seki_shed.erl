@@ -145,6 +145,11 @@ handle_call({admit, Priority}, _From, State) ->
             NewState = State#state{
                 total_shed = State#state.total_shed + 1
             },
+            logger:warning(
+                "Load shedder ~p: request shed (priority=~p, in_flight=~p/~p)",
+                [State#state.name, Priority, State#state.in_flight, State#state.max_in_flight],
+                #{domain => [seki]}
+            ),
             emit_shed(State#state.name, Priority, State#state.in_flight),
             {reply, {error, shed}, NewState}
     end;
@@ -236,6 +241,16 @@ update_codel(DurationMs, State) ->
     case DurationMs < Target of
         true ->
             %% Sojourn time below target — reset
+            case Dropping of
+                true ->
+                    logger:notice(
+                        "Load shedder ~p: CoDel exiting drop mode",
+                        [State#state.name],
+                        #{domain => [seki]}
+                    );
+                false ->
+                    ok
+            end,
             State1#state{
                 first_above_time = undefined,
                 dropping = false
@@ -249,6 +264,11 @@ update_codel(DurationMs, State) ->
             %% Check if we've been above target for an interval
             case Now - FirstAbove >= Interval of
                 true ->
+                    logger:warning(
+                        "Load shedder ~p: CoDel entering drop mode (drop_count=~p)",
+                        [State#state.name, DropCount + 1],
+                        #{domain => [seki]}
+                    ),
                     emit_codel_drop(State#state.name, DropCount + 1),
                     State1#state{
                         dropping = true,

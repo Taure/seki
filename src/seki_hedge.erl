@@ -100,6 +100,11 @@ wait_for_remaining(Ref, Pids) ->
                 _ -> wait_for_remaining(Ref, RemainingPids)
             end
     after 30000 ->
+        logger:error(
+            "Hedge timed out after 30s, killing ~p remaining processes",
+            [length(Pids)],
+            #{domain => [seki]}
+        ),
         lists:foreach(fun(P) -> exit(P, kill) end, Pids),
         {error, all_failed}
     end.

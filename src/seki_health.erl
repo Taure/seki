@@ -200,6 +200,26 @@ run_all_checks(State) ->
         State#state.checks
     ),
     OverallHealth = aggregate_health(Results, State#state.checks),
+    case OverallHealth of
+        unhealthy ->
+            FailedChecks = maps:fold(
+                fun
+                    (N, {H, _}, Acc) when H =:= unhealthy -> [N | Acc];
+                    (_, _, Acc) -> Acc
+                end,
+                [],
+                Results
+            ),
+            logger:error(
+                "Health ~p: unhealthy (failed checks: ~p)",
+                [State#state.name, FailedChecks],
+                #{domain => [seki]}
+            );
+        degraded ->
+            logger:warning("Health ~p: degraded", [State#state.name], #{domain => [seki]});
+        healthy ->
+            ok
+    end,
     emit_health(State#state.name, OverallHealth, Results),
     {#{health => OverallHealth, checks => Results}, State#state{checks = NewChecks}}.
 
@@ -210,6 +230,11 @@ run_check(#check{fun_ = Fun} = Check) ->
             Fun()
         catch
             _:Reason ->
+                logger:error(
+                    "Health check ~p threw exception: ~p",
+                    [Check#check.name, Reason],
+                    #{domain => [seki]}
+                ),
                 {unhealthy, #{error => Reason}}
         end,
     {Result, Check#check{last_result = Result, last_check = Now}}.

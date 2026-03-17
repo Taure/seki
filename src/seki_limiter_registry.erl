@@ -58,6 +58,7 @@ init([]) ->
 handle_call({register, Name, Opts}, _From, State) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
         [_] ->
+            logger:warning("Limiter ~p already registered", [Name], #{domain => [seki]}),
             {reply, {error, already_registered}, State};
         [] ->
             Algorithm = maps:get(algorithm, Opts),

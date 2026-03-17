@@ -114,6 +114,11 @@ handle_call({acquire, Pid}, _From, #state{counter = Counter, max_concurrent = Ma
             emit_acquire(State#state.name, Current + 1, Max),
             {reply, ok, State#state{monitors = NewMonitors}};
         false ->
+            logger:warning(
+                "Bulkhead ~p full (~p/~p), request rejected",
+                [State#state.name, Max, Max],
+                #{domain => [seki]}
+            ),
             emit_rejected(State#state.name, Max),
             {reply, {error, bulkhead_full}, State}
     end;
@@ -128,9 +133,14 @@ handle_cast({release, Pid}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({'DOWN', MonRef, process, _Pid, _Reason}, State) ->
+handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
     case maps:take(MonRef, State#state.monitors) of
         {_, NewMonitors} ->
+            logger:warning(
+                "Bulkhead ~p: process ~p died (~p), releasing slot",
+                [State#state.name, Pid, Reason],
+                #{domain => [seki]}
+            ),
             atomics:sub(State#state.counter, 1, 1),
             Current = atomics:get(State#state.counter, 1),
             emit_release(State#state.name, Current, State#state.max_concurrent),
