@@ -1,9 +1,13 @@
 -module(seki_backend).
 
-%% Behaviour for rate limiter storage backends.
-%%
-%% Backends must support atomic read-modify-write operations
-%% for rate limiting counters.
+-moduledoc """
+Behaviour for rate limiter storage backends.
+
+Implement this behaviour to provide custom storage (e.g., Redis, Mnesia).
+Backends must support atomic read-modify-write operations for rate limiting counters.
+
+Two built-in implementations: `seki_backend_ets` (local) and `seki_backend_pg` (distributed).
+""".
 
 -callback init(Opts :: map()) -> {ok, State :: term()}.
 

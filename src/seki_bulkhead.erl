@@ -1,7 +1,17 @@
 -module(seki_bulkhead).
 
-%% Process-based bulkhead (concurrency limiter).
-%% Uses atomics for lock-free counter operations.
+-moduledoc """
+Concurrency limiter (bulkhead pattern) using atomics for lock-free counting.
+
+Limits the number of concurrent executions. Monitors calling processes and
+auto-releases slots on crash. Use `call/2` for automatic acquire/release
+or `acquire/1` + `release/1` for manual control.
+
+## Example
+
+    seki_bulkhead:start_link(db_pool, #{max_concurrent => 25}).
+    {ok, Result} = seki_bulkhead:call(db_pool, fun() -> db:query(Q) end).
+""".
 
 -behaviour(gen_server).
 
@@ -34,26 +44,32 @@
 %% API
 %%----------------------------------------------------------------------
 
+-doc false.
 -spec start_link(atom(), map()) -> {ok, pid()}.
 start_link(Name, Opts) ->
     gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
 
+-doc "Acquire a concurrency slot (non-blocking, returns immediately).".
 -spec acquire(atom()) -> ok | {error, bulkhead_full}.
 acquire(Name) ->
     acquire(Name, 0).
 
+-doc "Acquire a concurrency slot with a timeout.".
 -spec acquire(atom(), non_neg_integer()) -> ok | {error, bulkhead_full}.
 acquire(Name, Timeout) ->
     gen_server:call(Name, {acquire, self()}, max(5000, Timeout + 1000)).
 
+-doc "Release a previously acquired concurrency slot.".
 -spec release(atom()) -> ok.
 release(Name) ->
     gen_server:cast(Name, {release, self()}).
 
+-doc "Execute a function with automatic acquire/release.".
 -spec call(atom(), fun(() -> term())) -> {ok, term()} | {error, bulkhead_full}.
 call(Name, Fun) ->
     call(Name, Fun, 5000).
 
+-doc "Execute a function with automatic acquire/release and a timeout.".
 -spec call(atom(), fun(() -> term()), non_neg_integer()) -> {ok, term()} | {error, bulkhead_full}.
 call(Name, Fun, Timeout) ->
     case acquire(Name, Timeout) of
@@ -68,6 +84,7 @@ call(Name, Fun, Timeout) ->
             Error
     end.
 
+-doc "Get current bulkhead status (current, max, available slots).".
 -spec status(atom()) ->
     #{current := non_neg_integer(), max := pos_integer(), available := non_neg_integer()}.
 status(Name) ->

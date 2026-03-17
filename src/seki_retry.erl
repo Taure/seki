@@ -1,6 +1,20 @@
 -module(seki_retry).
 
-%% Composable retry with backoff, jitter, and telemetry.
+-moduledoc """
+Composable retry with configurable backoff, jitter, and deadline awareness.
+
+Supports constant, exponential, and linear backoff with four jitter strategies
+(none, full, equal, decorrelated). Integrates with `seki_deadline` to stop
+retrying when a deadline is reached.
+
+## Example
+
+    seki_retry:run(fun() -> http:get(Url) end, #{
+        max_attempts => 5,
+        backoff => exponential,
+        jitter => full
+    }).
+""".
 
 -export([
     run/2,
@@ -22,10 +36,12 @@
 
 -export_type([backoff/0, jitter/0, retry_opts/0]).
 
+-doc "Run a function with retry. Retries on `{error, _}` by default.".
 -spec run(fun(() -> term()), retry_opts()) -> {ok, term()} | {error, term()}.
 run(Fun, Opts) ->
     run(undefined, Fun, Opts).
 
+-doc "Run a function with retry and a name for telemetry events.".
 -spec run(atom() | undefined, fun(() -> term()), retry_opts()) -> {ok, term()} | {error, term()}.
 run(Name, Fun, Opts) ->
     MaxAttempts = maps:get(max_attempts, Opts, 3),

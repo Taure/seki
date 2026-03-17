@@ -1,5 +1,13 @@
 -module(seki_backend_ets).
 
+-moduledoc """
+ETS-based storage backend for rate limiting. Default backend.
+
+Uses a public ETS table with read/write concurrency enabled.
+Suitable for single-node deployments. For distributed rate limiting,
+see `seki_backend_pg`.
+""".
+
 -behaviour(seki_backend).
 
 -export([

@@ -1,4 +1,5 @@
 -module(seki_breaker_sup).
+-moduledoc false.
 
 -behaviour(supervisor).
 

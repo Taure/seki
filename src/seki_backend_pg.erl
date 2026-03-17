@@ -1,16 +1,18 @@
 -module(seki_backend_pg).
 
-%% Distributed rate limiter backend using Erlang's `pg` module.
-%%
-%% Each node maintains local ETS counters. Changes are broadcast
-%% to other nodes in the `seki` pg scope via a gossip process.
-%% Eventually consistent — suitable for most rate limiting use cases.
-%%
-%% Architecture:
-%%   - Local reads/writes go to ETS (fast path)
-%%   - A gossip process periodically broadcasts local state to peers
-%%   - Peers merge received state using max-wins for counters
-%%   - Cluster membership is tracked automatically via pg
+-moduledoc """
+Distributed rate limiter backend using Erlang's `pg` module.
+
+Each node maintains local ETS counters. A gossip process (`seki_pg_gossip`)
+periodically broadcasts state to peers, which merge using last-writer-wins.
+Eventually consistent — suitable for most rate limiting use cases.
+
+## Options
+
+- `scope` — pg scope atom (default: `seki_pg`)
+- `group` — pg group atom (default: `seki_limiters`)
+- `gossip_interval` — broadcast interval in ms (default: 1000)
+""".
 
 -behaviour(seki_backend).
 

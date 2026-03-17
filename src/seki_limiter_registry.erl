@@ -1,4 +1,5 @@
 -module(seki_limiter_registry).
+-moduledoc false.
 
 -behaviour(gen_server).
 

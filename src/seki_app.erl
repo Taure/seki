@@ -1,4 +1,5 @@
 -module(seki_app).
+-moduledoc false.
 
 -behaviour(application).
 

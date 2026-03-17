@@ -1,5 +1,15 @@
 -module(seki_breaker).
 
+-moduledoc """
+Circuit breaker as a `gen_statem` with three states: closed, open, half_open.
+
+Tracks failure and slow-call rates in a sliding window. When thresholds are
+exceeded, the breaker opens and rejects calls with `{error, circuit_open}`.
+After a wait period, it transitions to half-open and allows probe requests.
+
+Typically used via `seki:call/2` rather than directly.
+""".
+
 -behaviour(gen_statem).
 
 %% API
@@ -41,17 +51,21 @@
 %% API
 %%----------------------------------------------------------------------
 
+-doc false.
 start_link(Name, Opts) ->
     gen_statem:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
 
+-doc "Execute a function through this breaker. Returns `{error, circuit_open}` when open.".
 -spec call(atom(), fun(() -> term()), map()) -> seki:call_result().
 call(Name, Fun, _CallOpts) ->
     gen_statem:call(Name, {call, Fun}).
 
+-doc "Get the current breaker state.".
 -spec get_state(atom()) -> closed | open | half_open.
 get_state(Name) ->
     gen_statem:call(Name, get_state).
 
+-doc "Reset the breaker to closed state.".
 -spec reset(atom()) -> ok.
 reset(Name) ->
     gen_statem:cast(Name, reset).

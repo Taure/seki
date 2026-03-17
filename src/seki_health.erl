@@ -1,17 +1,26 @@
 -module(seki_health).
 
-%% Deep health checking with dependency aggregation and BEAM VM awareness.
-%%
-%% Provides three health states:
-%%   - healthy: all checks pass
-%%   - degraded: some non-critical checks fail
-%%   - unhealthy: critical checks fail
-%%
-%% Built-in checks:
-%%   - BEAM VM: scheduler utilization, run queue, memory, process count
-%%   - Custom: register arbitrary check functions
-%%
-%% Compatible with Kubernetes liveness/readiness/startup probes.
+-moduledoc """
+Deep health checking with dependency aggregation and BEAM VM awareness.
+
+Three health states: `healthy`, `degraded`, `unhealthy`. Built-in BEAM VM
+checks (memory, processes, run queue) run automatically. Register custom
+checks for dependencies (databases, external services).
+
+Compatible with Kubernetes liveness/readiness/startup probes via
+`liveness/1` and `readiness/1`.
+
+## Example
+
+    seki_health:start_link(my_app_health, #{vm_checks => true}).
+    seki_health:register_check(my_app_health, database, fun() ->
+        case db:ping() of
+            ok -> {healthy, #{}};
+            _ -> {unhealthy, #{reason => db_down}}
+        end
+    end, #{critical => true}).
+    ok = seki_health:readiness(my_app_health).
+""".
 
 -behaviour(gen_server).
 
@@ -61,34 +70,41 @@
 %% API
 %%----------------------------------------------------------------------
 
+-doc false.
 start_link(Name) ->
     start_link(Name, #{}).
 
+-doc false.
 start_link(Name, Opts) ->
     gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
 
+-doc "Register a health check function. Optionally mark as critical.".
 -spec register_check(atom(), atom(), check_fun()) -> ok.
 register_check(Name, CheckName, Fun) ->
     register_check(Name, CheckName, Fun, #{}).
 
+-doc "Register a health check with options. Set `#{critical => true}` to make failures return unhealthy.".
 -spec register_check(atom(), atom(), check_fun(), map()) -> ok.
 register_check(Name, CheckName, Fun, Opts) ->
     Critical = maps:get(critical, Opts, false),
     gen_server:call(Name, {register, CheckName, Fun, Critical}).
 
+-doc "Remove a previously registered health check.".
 -spec unregister_check(atom(), atom()) -> ok.
 unregister_check(Name, CheckName) ->
     gen_server:call(Name, {unregister, CheckName}).
 
+-doc "Run all health checks and return aggregated health status.".
 -spec check(atom()) -> #{health := health(), checks := map()}.
 check(Name) ->
     gen_server:call(Name, check).
 
+-doc "Run a single named health check.".
 -spec check_one(atom(), atom()) -> check_result() | {error, not_found}.
 check_one(Name, CheckName) ->
     gen_server:call(Name, {check_one, CheckName}).
 
-%% Kubernetes liveness: is the process alive and responsive?
+-doc "Kubernetes liveness probe — checks if the process is alive and responsive.".
 -spec liveness(atom()) -> ok | {error, unhealthy}.
 liveness(Name) ->
     try
@@ -97,7 +113,7 @@ liveness(Name) ->
         _:_ -> {error, unhealthy}
     end.
 
-%% Kubernetes readiness: is the service ready to accept traffic?
+-doc "Kubernetes readiness probe — returns `ok` unless health is `unhealthy`.".
 -spec readiness(atom()) -> ok | {error, term()}.
 readiness(Name) ->
     case check(Name) of
@@ -105,6 +121,7 @@ readiness(Name) ->
         _ -> ok
     end.
 
+-doc "Alias for `check/1`.".
 -spec status(atom()) -> map().
 status(Name) ->
     check(Name).
