@@ -207,26 +207,92 @@ end.
 -module(my_rate_limit_plugin).
 -behaviour(nova_plugin).
 
--export([pre_request/2, post_request/2, plugin_info/0]).
+-export([pre_request/4, post_request/4, plugin_info/0]).
 
-pre_request(Req, Env) ->
-    IP = cowboy_req:peer(Req),
-    case seki:check(api_limit, IP) of
+pre_request(Req, _Env, Opts, State) ->
+    Limiter = maps:get(limiter, Opts, api_limit),
+    {IP, _Port} = cowboy_req:peer(Req),
+    case seki:check(Limiter, IP) of
         {allow, #{remaining := Remaining}} ->
             Req2 = cowboy_req:set_resp_header(<<"X-RateLimit-Remaining">>,
                 integer_to_binary(Remaining), Req),
-            {ok, Req2, Env};
+            {ok, Req2, State};
         {deny, #{retry_after := Ms}} ->
             Req2 = cowboy_req:set_resp_header(<<"Retry-After">>,
                 integer_to_binary(Ms div 1000), Req),
-            {stop, cowboy_req:reply(429, #{}, <<"Rate limited">>, Req2)}
+            {stop, {reply, 429, #{}, <<"Rate limited">>}, Req2, State}
     end.
 
-post_request(Req, Env) ->
-    {ok, Req, Env}.
+post_request(Req, _Env, _Opts, State) ->
+    {ok, Req, State}.
 
 plugin_info() ->
-    #{name => <<"rate_limit">>, version => <<"0.1.0">>}.
+    #{title => <<"Seki Rate Limit">>,
+      version => <<"0.1.0">>,
+      url => <<"https://github.com/Taure/seki">>,
+      authors => [<<"Taure">>],
+      description => <<"Rate limiting plugin for Nova using Seki">>,
+      options => [{limiter, <<"Name of the seki limiter to use">>}]}.
+```
+
+### Route Configuration
+
+```erlang
+%% In your routes file
+#{prefix => "/api",
+  plugins => [
+      {pre_request, my_rate_limit_plugin, #{limiter => api_limit}}
+  ],
+  routes => [
+      {"/users", {my_controller, index}, #{methods => [get]}}
+  ]
+}.
+
+%% Auth endpoints with stricter limits
+#{prefix => "/auth",
+  plugins => [
+      {pre_request, my_rate_limit_plugin, #{limiter => auth_limit}}
+  ],
+  routes => [
+      {"/login", {auth_controller, login}, #{methods => [post]}}
+  ]
+}.
+```
+
+### Deadline Plugin
+
+Propagates deadlines from upstream services and sets request timeouts:
+
+```erlang
+-module(my_deadline_plugin).
+-behaviour(nova_plugin).
+
+-export([pre_request/4, post_request/4, plugin_info/0]).
+
+pre_request(Req, _Env, Opts, State) ->
+    DefaultTimeout = maps:get(timeout, Opts, 30000),
+    case cowboy_req:header(<<"x-deadline-remaining">>, Req) of
+        undefined ->
+            seki_deadline:set(DefaultTimeout),
+            {ok, Req, State};
+        Value ->
+            case seki_deadline:from_header(Value) of
+                ok -> {ok, Req, State};
+                {error, _} ->
+                    seki_deadline:set(DefaultTimeout),
+                    {ok, Req, State}
+            end
+    end.
+
+post_request(Req, _Env, _Opts, State) ->
+    seki_deadline:clear(),
+    {ok, Req, State}.
+
+plugin_info() ->
+    #{title => <<"Seki Deadline">>,
+      version => <<"0.1.0">>,
+      description => <<"Deadline propagation plugin for Nova">>,
+      options => [{timeout, <<"Default request timeout in ms">>}]}.
 ```
 
 ### Circuit Breaker in Controller
@@ -235,7 +301,7 @@ plugin_info() ->
 -module(my_controller).
 -export([index/1]).
 
-index(#{req := Req}) ->
+index(#{req := _Req}) ->
     case seki:call(external_api, fun() -> fetch_data() end) of
         {ok, Data} ->
             {json, 200, #{}, Data};
