@@ -22,6 +22,11 @@ init([]) ->
             type => supervisor
         },
         #{
+            id => seki_process_sup,
+            start => {seki_process_sup, start_link, []},
+            type => supervisor
+        },
+        #{
             id => seki_limiter_registry,
             start => {seki_limiter_registry, start_link, []}
         }

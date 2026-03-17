@@ -39,6 +39,18 @@ and a combined `execute/3` that checks rate limits before calling through a brea
     delete_breaker/1
 ]).
 
+%% Supervised process API
+-export([
+    new_bulkhead/2,
+    delete_bulkhead/1,
+    new_adaptive/2,
+    delete_adaptive/1,
+    new_shed/2,
+    delete_shed/1,
+    new_health/2,
+    delete_health/1
+]).
+
 %% Combined API
 -export([
     execute/3
@@ -173,6 +185,50 @@ reset_breaker(Name) ->
 -spec delete_breaker(breaker_name()) -> ok | {error, term()}.
 delete_breaker(Name) ->
     seki_breaker_sup:stop_breaker(Name).
+
+%%----------------------------------------------------------------------
+%% Supervised Process API
+%%----------------------------------------------------------------------
+
+-doc "Start a supervised bulkhead.".
+-spec new_bulkhead(atom(), map()) -> {ok, pid()} | {error, term()}.
+new_bulkhead(Name, Opts) ->
+    seki_process_sup:start_child(seki_bulkhead, Name, Opts).
+
+-doc "Stop and remove a supervised bulkhead.".
+-spec delete_bulkhead(atom()) -> ok | {error, term()}.
+delete_bulkhead(Name) ->
+    seki_process_sup:stop_child(Name).
+
+-doc "Start a supervised adaptive concurrency limiter.".
+-spec new_adaptive(atom(), map()) -> {ok, pid()} | {error, term()}.
+new_adaptive(Name, Opts) ->
+    seki_process_sup:start_child(seki_adaptive, Name, Opts).
+
+-doc "Stop and remove a supervised adaptive concurrency limiter.".
+-spec delete_adaptive(atom()) -> ok | {error, term()}.
+delete_adaptive(Name) ->
+    seki_process_sup:stop_child(Name).
+
+-doc "Start a supervised load shedder.".
+-spec new_shed(atom(), map()) -> {ok, pid()} | {error, term()}.
+new_shed(Name, Opts) ->
+    seki_process_sup:start_child(seki_shed, Name, Opts).
+
+-doc "Stop and remove a supervised load shedder.".
+-spec delete_shed(atom()) -> ok | {error, term()}.
+delete_shed(Name) ->
+    seki_process_sup:stop_child(Name).
+
+-doc "Start a supervised health checker.".
+-spec new_health(atom(), map()) -> {ok, pid()} | {error, term()}.
+new_health(Name, Opts) ->
+    seki_process_sup:start_child(seki_health, Name, Opts).
+
+-doc "Stop and remove a supervised health checker.".
+-spec delete_health(atom()) -> ok | {error, term()}.
+delete_health(Name) ->
+    seki_process_sup:stop_child(Name).
 
 %%----------------------------------------------------------------------
 %% Combined API
