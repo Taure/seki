@@ -125,7 +125,7 @@ build_config(gcra, Opts) ->
     Limit = maps:get(limit, Opts),
     Window = maps:get(window, Opts),
     Burst = maps:get(burst, Opts, Limit),
-    EmissionInterval = Window div Limit,
+    EmissionInterval = Window / Limit,
     BurstTolerance = EmissionInterval * (Burst - 1),
     #{
         limit => Limit,
