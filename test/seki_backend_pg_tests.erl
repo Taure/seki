@@ -19,7 +19,8 @@ pg_backend_test_() ->
         {"gossip merge - sliding window same window", fun merge_sliding_same/0},
         {"gossip merge - sliding window newer window", fun merge_sliding_newer/0},
         {"gossip merge - token bucket", fun merge_token_bucket/0},
-        {"gossip merge - GCRA", fun merge_gcra/0}
+        {"gossip merge - GCRA", fun merge_gcra/0},
+        {"gossip merge - GCRA float TAT", fun merge_gcra_float/0}
     ]}.
 
 basic_get_put() ->
@@ -184,4 +185,13 @@ merge_gcra() ->
     seki_pg_gossip:merge_entries_for_test(Tab, Remote),
     [{key1, TAT}] = ets:lookup(Tab, key1),
     ?assertEqual(1500, TAT),
+    ets:delete(Tab).
+
+merge_gcra_float() ->
+    Tab = ets:new(merge_test_5, [set, public]),
+    ets:insert(Tab, {key1, 1000.5}),
+    seki_pg_gossip:merge_entries_for_test(Tab, [{key1, 1500.25}]),
+    ?assertEqual([{key1, 1500.25}], ets:lookup(Tab, key1)),
+    seki_pg_gossip:merge_entries_for_test(Tab, [{key1, 1200}]),
+    ?assertEqual([{key1, 1500.25}], ets:lookup(Tab, key1)),
     ets:delete(Tab).

@@ -156,7 +156,7 @@ merge_value({LT, LTs}, {RT, _RTs}) ->
     {min(LT, RT), LTs};
 %% GCRA: single timestamp (TAT)
 %% Take the higher TAT (more rate-limited state wins).
-merge_value(LTAT, RTAT) when is_integer(LTAT), is_integer(RTAT) ->
+merge_value(LTAT, RTAT) when is_number(LTAT), is_number(RTAT) ->
     max(LTAT, RTAT);
 %% Unknown shape — prefer local
 merge_value(Local, _Remote) ->
