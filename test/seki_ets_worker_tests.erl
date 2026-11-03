@@ -13,8 +13,13 @@ worker_test_() ->
             {"stopped workers fall back to a local loop", fun stopped_worker_falls_back/0},
             {"unpublished worker names fall back to a local loop",
                 fun unpublished_names_fall_back/0},
-            {timeout, 30, {"a step past its deadline is not run", fun expired_step_is_not_run/0}}
+            {timeout, 30, {"a step past its deadline is not run", fun expired_step_is_not_run/0}},
+            {"unknown calls are refused", fun unknown_request_refused/0}
         ]}.
+
+unknown_request_refused() ->
+    [Name | _] = seki_ets_worker:names(),
+    ?assertEqual({error, unknown_request}, gen_server:call(Name, ping)).
 
 workers_started() ->
     Names = seki_ets_worker:names(),

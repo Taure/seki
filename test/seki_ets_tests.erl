@@ -13,6 +13,15 @@ update_applies_default_test() ->
     ?assertEqual({ok, 2}, seki_ets:update(Tab, counter, fun(V) when is_integer(V) -> V + 1 end, 0)),
     ?assertEqual([{counter, 2}], ets:lookup(Tab, counter)).
 
+delete_removes_escaped_key_test() ->
+    Tab = new_tab(),
+    Key = {user, '_'},
+    ok = seki_ets:insert(Tab, Key, 1),
+    ok = seki_ets:insert(Tab, other, 2),
+    ok = seki_ets:delete(Tab, Key),
+    ?assertEqual(not_found, seki_ets:lookup(Tab, Key)),
+    ?assertEqual({ok, 2}, seki_ets:lookup(Tab, other)).
+
 keep_does_not_write_test() ->
     Tab = new_tab(),
     ?assertEqual({ok, seen}, seki_ets:atomic_update(Tab, key, {?MODULE, keep_step, []})),
