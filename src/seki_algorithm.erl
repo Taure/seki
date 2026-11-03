@@ -26,7 +26,7 @@ Perform a rate limit check, consuming tokens/capacity. Called by `seki:check/3`.
 
 The read, decision and write happen as one atomic step through the backend's
 `atomic_update/3`. If the backend gives up under contention the check is
-denied. Backends registered with `allow_non_atomic => true` use `get/2` then
+denied and `[seki, rate_limit, contention]` is emitted. Backends registered with `allow_non_atomic => true` use `get/2` then
 `put/3` instead.
 """.
 -doc #{since => <<"0.1.0">>}.
@@ -36,8 +36,11 @@ check(Algorithm, Backend, State, Key, Cost, Now, #{atomic := false} = Config) ->
     Result;
 check(Algorithm, Backend, State, Key, Cost, Now, Config) ->
     case Backend:atomic_update(State, Key, {?MODULE, step, [Algorithm, Cost, Now, Config]}) of
-        {ok, Result} -> Result;
-        {error, contention} -> {deny, #{retry_after => 1}}
+        {ok, Result} ->
+            Result;
+        {error, contention} ->
+            telemetry:execute([seki, rate_limit, contention], #{count => 1}, #{key => Key}),
+            {deny, #{retry_after => 1}}
     end.
 
 -doc false.

@@ -2,7 +2,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--export([atomic_update/3]).
+-export([atomic_update/3, handle_event/4]).
 
 -define(LIMIT, 150).
 -define(PROCS, 200).
@@ -109,10 +109,26 @@ nonatomic_backend() ->
 
 contention_denies() ->
     Config = #{limit => 10, window => 1000, emission_interval => 100.0, burst_tolerance => 900.0},
-    ?assertEqual(
-        {deny, #{retry_after => 1}},
-        seki_algorithm:check(gcra, ?MODULE, undefined, key, 1, 0, Config)
-    ).
+    ok = telemetry:attach(
+        contention_test, [seki, rate_limit, contention], fun ?MODULE:handle_event/4, self()
+    ),
+    try
+        ?assertEqual(
+            {deny, #{retry_after => 1}},
+            seki_algorithm:check(gcra, ?MODULE, undefined, key, 1, 0, Config)
+        ),
+        receive
+            {contention, Measurements, Metadata} ->
+                ?assertEqual(#{count => 1}, Measurements),
+                ?assertEqual(#{key => key}, Metadata)
+        after 1000 -> ?assert(false)
+        end
+    after
+        telemetry:detach(contention_test)
+    end.
+
+handle_event([seki, rate_limit, contention], Measurements, Metadata, Pid) ->
+    Pid ! {contention, Measurements, Metadata}.
 
 atomic_update(_State, _Key, _Step) ->
     {error, contention}.

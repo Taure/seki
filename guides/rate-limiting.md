@@ -177,6 +177,11 @@ independently until every node runs the new version.
 |-------|-------------|----------|
 | `[seki, rate_limit, allow]` | `remaining`, `cost` | `name`, `key` |
 | `[seki, rate_limit, deny]` | `retry_after`, `cost` | `name`, `key` |
+| `[seki, rate_limit, contention]` | `count` | `key` |
+
+A `contention` event means a check was denied because its key stayed contended
+past the worker deadline (1 s) or 1000 compare-and-swap attempts. The denial also
+emits `deny` with `retry_after => 1`.
 
 ## Custom Backends
 
