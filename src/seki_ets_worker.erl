@@ -39,10 +39,13 @@ publish_names(Names) ->
 route(Tab, StorageKey) ->
     case persistent_term:get(?NAMES_KEY, undefined) of
         Names when is_tuple(Names), tuple_size(Names) > 0 ->
-            {worker, element(erlang:phash2({Tab, StorageKey}, tuple_size(Names)) + 1, Names)};
+            worker(element(erlang:phash2({Tab, StorageKey}, tuple_size(Names)) + 1, Names));
         _ ->
             local
     end.
+
+worker(Name) when is_atom(Name) -> {worker, Name};
+worker(_Name) -> local.
 
 -spec atomic_update(ets:table(), term(), seki_ets:step()) -> {ok, term()} | {error, contention}.
 atomic_update(Tab, StorageKey, Step) ->
