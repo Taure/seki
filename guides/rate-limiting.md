@@ -167,9 +167,13 @@ one gossip interval. During partitions, each node enforces its local view indepe
 Each limiter gossips in its own `pg` group, `{seki_limiters, TableName}` by default.
 If you set `group` yourself, use a different group per limiter: limiters that share
 a group merge each other's keys. Timestamps travel relative to the sender's clock,
-so nodes with different uptimes merge correctly. Gossip from seki 0.4.x nodes is
-ignored, so during a rolling upgrade old and new nodes enforce their limits
-independently until every node runs the new version.
+so nodes with different uptimes merge token bucket, leaky bucket and GCRA state
+correctly. Each node aligns sliding windows to its own clock, so windows that
+start less than one window apart are merged as the same window, keeping the higher
+counts. Configure a limiter with the same algorithm on every node: gossip for
+another algorithm is ignored. Gossip from seki 0.4.x nodes is ignored too, so
+during a rolling upgrade old and new nodes enforce their limits independently
+until every node runs the new version.
 
 ## Telemetry Events
 

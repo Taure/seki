@@ -16,7 +16,7 @@ Used internally by `seki_backend_pg`.
     start_link/1,
     stop/1,
     merge_entries_for_test/2,
-    merge_step/2
+    merge_step/3
 ]).
 
 -export([
@@ -31,9 +31,11 @@ Used internally by `seki_backend_pg`.
 
 -record(state, {
     scope :: atom(),
-    group :: atom(),
+    group :: term(),
     tab :: ets:tid(),
-    interval :: pos_integer()
+    interval :: pos_integer(),
+    algorithm :: seki:algorithm() | undefined,
+    window :: pos_integer() | undefined
 }).
 
 %%----------------------------------------------------------------------
@@ -50,7 +52,7 @@ stop(Pid) ->
 %% gen_server callbacks
 %%----------------------------------------------------------------------
 
-init(#{scope := Scope, group := Group, tab := Tab, interval := Interval}) ->
+init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts) ->
     ok = pg:join(Scope, Group, self()),
     logger:info(
         "Gossip joined pg group ~p:~p (interval=~pms)",
@@ -62,26 +64,33 @@ init(#{scope := Scope, group := Group, tab := Tab, interval := Interval}) ->
         scope = Scope,
         group = Group,
         tab = Tab,
-        interval = Interval
+        interval = Interval,
+        algorithm = maps:get(algorithm, Opts, undefined),
+        window = maps:get(window, Opts, undefined)
     }}.
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown}, State}.
 
-handle_cast({seki_gossip, ?GOSSIP_VERSION, Entries}, #state{tab = Tab} = State) when
-    is_list(Entries)
-->
+handle_cast(
+    {seki_gossip, ?GOSSIP_VERSION, Algorithm, Entries},
+    #state{tab = Tab, algorithm = Algorithm, window = Window} = State
+) when is_list(Entries) ->
     Now = erlang:monotonic_time(millisecond),
-    merge_entries(Tab, [
-        {Key, Value}
-     || {Key, Relative} <- Entries, {ok, Value} <- [from_relative(Relative, Now)]
-    ]),
+    merge_entries(
+        Tab,
+        [
+            {Key, Value}
+         || {Key, Encoded} <- Entries, {ok, Value} <- [decode(Algorithm, Encoded, Now)]
+        ],
+        Window
+    ),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info(gossip, #state{scope = Scope, group = Group, tab = Tab, interval = Interval} = State) ->
-    broadcast_state(Scope, Group, Tab),
+handle_info(gossip, #state{interval = Interval} = State) ->
+    broadcast_state(State),
     schedule_gossip(Interval),
     {noreply, State};
 handle_info(_Info, State) ->
@@ -103,11 +112,11 @@ terminate(Reason, #state{scope = Scope, group = Group}) ->
 schedule_gossip(Interval) ->
     erlang:send_after(Interval, self(), gossip).
 
-broadcast_state(Scope, Group, Tab) ->
+broadcast_state(#state{scope = Scope, group = Group, tab = Tab, algorithm = Algorithm}) ->
     Now = erlang:monotonic_time(millisecond),
     Entries = [
-        {Key, Relative}
-     || {Key, Value} <- ets:tab2list(Tab), {ok, Relative} <- [to_relative(Value, Now)]
+        {Key, Encoded}
+     || {Key, Value} <- ets:tab2list(Tab), {ok, Encoded} <- [encode(Algorithm, Value, Now)]
     ],
     case Entries of
         [] ->
@@ -118,44 +127,62 @@ broadcast_state(Scope, Group, Tab) ->
             Peers = [P || P <- Members, P =/= Self],
             lists:foreach(
                 fun(Peer) ->
-                    gen_server:cast(Peer, {seki_gossip, ?GOSSIP_VERSION, Entries})
+                    gen_server:cast(Peer, {seki_gossip, ?GOSSIP_VERSION, Algorithm, Entries})
                 end,
                 Peers
             )
     end.
 
-%% Monotonic time differs between nodes by the gap in VM uptime, so timestamps
-%% travel as offsets from the sender's now and are rebased on the receiver's.
-to_relative({Prev, Curr, WinStart}, Now) when
+%% Monotonic time differs between nodes by the gap in VM uptime, so the
+%% timestamps in a limiter's state travel as offsets from the sender's now and
+%% are rebased on the receiver's. Values in a table that no limiter owns are
+%% not known to hold timestamps and travel as they are.
+encode(undefined, Value, _Now) ->
+    {ok, Value};
+encode(Algorithm, Value, Now) ->
+    shift(Algorithm, Value, -Now).
+
+decode(undefined, Value, _Now) ->
+    {ok, Value};
+decode(Algorithm, Encoded, Now) ->
+    shift(Algorithm, Encoded, Now).
+
+shift(sliding_window, {Prev, Curr, WinStart}, By) when
     is_number(Prev), is_number(Curr), is_number(WinStart)
 ->
-    {ok, {Prev, Curr, WinStart - Now}};
-to_relative({Amount, Timestamp}, Now) when is_number(Amount), is_number(Timestamp) ->
-    {ok, {Amount, Timestamp - Now}};
-to_relative(TAT, Now) when is_number(TAT) ->
-    {ok, TAT - Now};
-to_relative(_Value, _Now) ->
+    {ok, {Prev, Curr, WinStart + By}};
+shift(token_bucket, Bucket, By) ->
+    shift_bucket(Bucket, By);
+shift(leaky_bucket, Bucket, By) ->
+    shift_bucket(Bucket, By);
+shift(gcra, TAT, By) when is_number(TAT) ->
+    {ok, TAT + By};
+shift(_Algorithm, _Value, _By) ->
     skip.
 
-from_relative(Relative, Now) ->
-    to_relative(Relative, -Now).
+shift_bucket({Amount, Timestamp}, By) when is_number(Amount), is_number(Timestamp) ->
+    {ok, {Amount, Timestamp + By}};
+shift_bucket(_Value, _By) ->
+    skip.
 
 merge_entries_for_test(Tab, Entries) ->
-    merge_entries(Tab, Entries).
+    merge_entries(Tab, Entries, undefined).
 
-merge_entries(Tab, Entries) ->
+merge_entries(Tab, Entries, Window) ->
     lists:foreach(
         fun({Key, RemoteValue}) ->
-            _ = seki_ets:atomic_update_stored(Tab, Key, {?MODULE, merge_step, [RemoteValue]})
+            _ = seki_ets:atomic_update_stored(
+                Tab, Key, {?MODULE, merge_step, [RemoteValue, Window]}
+            )
         end,
         Entries
     ).
 
 -doc false.
-merge_step(not_found, RemoteValue) ->
+merge_step(not_found, RemoteValue, _Window) ->
     {ok, {write, RemoteValue}};
-merge_step({ok, LocalValue}, RemoteValue) ->
-    case merge_value(LocalValue, RemoteValue) of
+merge_step({ok, LocalValue}, RemoteValue, Window) ->
+    case merge_value(LocalValue, RemoteValue, Window) of
         LocalValue -> {ok, keep};
         Merged -> {ok, {write, Merged}}
     end.
@@ -163,15 +190,23 @@ merge_step({ok, LocalValue}, RemoteValue) ->
 %% Merge strategies based on value shape.
 %%
 %% Sliding window: {PrevCount, CurrCount, WindowStart}
-%% Take the entry with the higher window start (most recent window),
-%% and for the same window, take the higher counts.
+%% Each node aligns windows to its own clock, so window starts less than one
+%% window apart are the same window: take the higher counts on the local start.
+%% Otherwise take the entry with the most recent window.
+merge_value({LP, LC, LW}, {RP, RC, RW}, Window) when
+    is_integer(Window), abs(LW - RW) < Window
+->
+    {max(LP, RP), max(LC, RC), LW};
+merge_value(Local, Remote, _Window) ->
+    merge_value(Local, Remote).
+
 merge_value({LP, LC, LW}, {_RP, _RC, RW}) when LW > RW ->
     {LP, LC, LW};
 merge_value({_LP, _LC, _LW}, {RP, RC, RW}) when _LW < RW ->
     %% Remote has a newer window
     {RP, RC, RW};
 merge_value({LP, LC, LW}, {RP, RC, _RW}) ->
-    %% Same window — take max counts
+    %% Same window: take max counts
     {max(LP, RP), max(LC, RC), LW};
 %% Token bucket / Leaky bucket: {Tokens/Level, Timestamp}
 %% Take the entry with the more recent timestamp.
@@ -186,6 +221,6 @@ merge_value({LT, LTs}, {RT, _RTs}) ->
 %% Take the higher TAT (more rate-limited state wins).
 merge_value(LTAT, RTAT) when is_number(LTAT), is_number(RTAT) ->
     max(LTAT, RTAT);
-%% Unknown shape — prefer local
+%% Unknown shape: prefer local
 merge_value(Local, _Remote) ->
     Local.

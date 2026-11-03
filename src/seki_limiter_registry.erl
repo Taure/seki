@@ -114,7 +114,8 @@ start_limiter(Name, Backend, Opts, State) ->
     BackendOpts = maps:merge(
         #{table_name => limiter_table(Name)}, maps:get(backend_opts, Opts, #{})
     ),
-    {ok, BackendState} = Backend:init(BackendOpts),
+    Limiter = #{algorithm => Algorithm, window => maps:get(window, Opts)},
+    {ok, BackendState} = Backend:init(BackendOpts#{seki_limiter => Limiter}),
     Config = (build_config(Algorithm, Opts))#{atomic => is_atomic(Backend)},
     true = ets:insert(?REGISTRY_TAB, {Name, Algorithm, Backend, BackendState, Config}),
     State#{Name => BackendState}.

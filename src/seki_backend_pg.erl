@@ -7,18 +7,24 @@ Each node maintains local ETS counters. A gossip process (`seki_pg_gossip`)
 periodically broadcasts state to peers, which merge using last-writer-wins.
 Local updates are atomic per key, like `seki_backend_ets`; gossip merges use
 the same compare-and-swap so they never overwrite a concurrent local check.
-Gossip sends timestamps relative to the sender's clock and rebases them on the
-receiver, because monotonic time differs between nodes. Messages carry a
-format version; messages from 0.4.x nodes are ignored. Across nodes the state
-is eventually consistent — suitable for most rate limiting use cases.
+
+For a limiter created with `seki:new_limiter/2`, gossip sends the timestamps
+in its state relative to the sender's clock and rebases them on the receiver,
+because monotonic time differs between nodes. Sliding windows that start less
+than one window apart are merged as the same window. Gossip is tagged with the
+limiter's algorithm and a format version; gossip for another algorithm, or
+from 0.4.x nodes, is ignored. Values in a table that no limiter owns, such as
+one written through `update/4` on a standalone backend, are gossiped as they
+are and never rebased. Across nodes the state is eventually consistent, which
+suits most rate limiting use cases.
 
 ## Options
 
-- `scope` — pg scope atom (default: `seki_pg`)
-- `group` — pg group (default: `{seki_limiters, TableName}`, one group per
+- `scope`: pg scope atom (default: `seki_pg`)
+- `group`: pg group (default: `{seki_limiters, TableName}`, one group per
   limiter). Limiters that share a group merge each other's keys, so give each
   limiter its own group.
-- `gossip_interval` — broadcast interval in ms (default: 1000)
+- `gossip_interval`: broadcast interval in ms (default: 1000)
 """.
 
 -behaviour(seki_backend).
@@ -58,11 +64,14 @@ init(Opts) ->
     ]),
     %% Start gossip process
     GossipInterval = maps:get(gossip_interval, Opts, 1000),
+    Limiter = maps:get(seki_limiter, Opts, #{}),
     {ok, GossipPid} = seki_pg_gossip:start_link(#{
         scope => Scope,
         group => Group,
         tab => Tab,
-        interval => GossipInterval
+        interval => GossipInterval,
+        algorithm => maps:get(algorithm, Limiter, undefined),
+        window => maps:get(window, Limiter, undefined)
     }),
     logger:info(
         "Distributed backend started (scope=~p, group=~p, gossip_interval=~pms)",

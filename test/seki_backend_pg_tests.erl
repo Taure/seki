@@ -95,10 +95,11 @@ gossip_merge_cast() ->
         scope => seki_pg,
         group => gossip_test_group_2,
         tab => Tab,
-        interval => 60000
+        interval => 60000,
+        algorithm => gcra
     }),
     %% Send merge cast with a higher GCRA TAT, relative to the sender's now
-    gen_server:cast(Pid, {seki_gossip, 2, [{key1, 200}]}),
+    gen_server:cast(Pid, {seki_gossip, 2, gcra, [{key1, 200}]}),
     {error, unknown} = gen_server:call(Pid, sync),
     [{key1, TAT}] = ets:lookup(Tab, key1),
     ?assert(TAT >= Now + 200),
@@ -122,16 +123,22 @@ gossip_broadcast() ->
         tab => Tab2,
         interval => 60000
     }),
-    %% Wait for Pid1 to gossip to Pid2
-    timer:sleep(100),
-    case ets:lookup(Tab2, key1) of
-        [{key1, Val}] -> ?assert(Val >= 500 andalso Val =< 600);
-        [] -> ?assert(false)
-    end,
+    ?assertEqual([{key1, 500}], wait_for(Tab2, key1, 2000)),
     seki_pg_gossip:stop(Pid1),
     seki_pg_gossip:stop(Pid2),
     ets:delete(Tab1),
     ets:delete(Tab2).
+
+wait_for(Tab, Key, Timeout) when Timeout =< 0 ->
+    ets:lookup(Tab, Key);
+wait_for(Tab, Key, Timeout) ->
+    case ets:lookup(Tab, Key) of
+        [] ->
+            timer:sleep(10),
+            wait_for(Tab, Key, Timeout - 10);
+        Found ->
+            Found
+    end.
 
 ensure_pg_scope(Scope) ->
     case pg:start(Scope) of
@@ -203,7 +210,14 @@ gossip_isolation_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {timeout, 30, {"default groups keep limiters apart", fun default_groups_are_per_limiter/0}},
         {"relative timestamps are rebased to the local clock", fun relative_entry_is_rebased/0},
-        {"0.4.3 gossip messages are ignored", fun old_format_is_ignored/0}
+        {"0.4.3 gossip messages are ignored", fun old_format_is_ignored/0},
+        {"bucket timestamps are rebased on receive", fun bucket_entries_are_rebased/0},
+        {"window starts are rebased on receive", fun window_entry_is_rebased/0},
+        {"timestamps leave relative to the sender", fun sent_entries_are_relative/0},
+        {"windows less than one window apart merge counts", fun close_windows_merge_counts/0},
+        {"windows a full window apart take the newer", fun distant_windows_take_newer/0},
+        {"values outside a limiter are sent as they are", fun standalone_values_are_verbatim/0},
+        {"gossip for another algorithm is ignored", fun other_algorithm_is_ignored/0}
     ]}.
 
 default_groups_are_per_limiter() ->
@@ -235,7 +249,7 @@ relative_entry_is_rebased() ->
     {Gossip, State} = gossip_limiter(rebase_gcra),
     Tau = 900.0,
     Before = erlang:monotonic_time(millisecond),
-    gen_server:cast(Gossip, {seki_gossip, 2, [{key, Tau}]}),
+    gen_server:cast(Gossip, {seki_gossip, 2, gcra, [{key, Tau}]}),
     {error, unknown} = gen_server:call(Gossip, sync),
     After = erlang:monotonic_time(millisecond),
     {ok, TAT} = seki_backend_pg:get(State, key),
@@ -251,15 +265,127 @@ old_format_is_ignored() ->
     seki:delete_limiter(old_format_gcra),
     ?assertEqual(not_found, Result).
 
+bucket_entries_are_rebased() ->
+    _ = [
+        begin
+            Name = list_to_atom("rebase_" ++ atom_to_list(Algorithm)),
+            {Gossip, State} = gossip_limiter(Name, Algorithm),
+            Before = erlang:monotonic_time(millisecond),
+            gen_server:cast(Gossip, {seki_gossip, 2, Algorithm, [{k, {5.0, -100}}]}),
+            {error, unknown} = gen_server:call(Gossip, sync),
+            After = erlang:monotonic_time(millisecond),
+            {ok, {5.0, Timestamp}} = seki_backend_pg:get(State, k),
+            seki:delete_limiter(Name),
+            ?assert(Timestamp >= Before - 100 andalso Timestamp =< After - 100)
+        end
+     || Algorithm <:- [token_bucket, leaky_bucket]
+    ],
+    ok.
+
+window_entry_is_rebased() ->
+    {Gossip, State} = gossip_limiter(rebase_window, sliding_window),
+    Before = erlang:monotonic_time(millisecond),
+    gen_server:cast(Gossip, {seki_gossip, 2, sliding_window, [{k, {1, 2, -500}}]}),
+    {error, unknown} = gen_server:call(Gossip, sync),
+    After = erlang:monotonic_time(millisecond),
+    {ok, {1, 2, WinStart}} = seki_backend_pg:get(State, k),
+    seki:delete_limiter(rebase_window),
+    ?assert(WinStart >= Before - 500 andalso WinStart =< After - 500).
+
+sent_entries_are_relative() ->
+    _ = [
+        begin
+            Name = list_to_atom("send_" ++ atom_to_list(Algorithm)),
+            {Gossip, State} = gossip_limiter(Name, Algorithm),
+            Now = erlang:monotonic_time(millisecond),
+            ok = seki_backend_pg:put(State, k, Value(Now - 100)),
+            Entries = capture_gossip(Name, Gossip, Algorithm),
+            seki:delete_limiter(Name),
+            [{k, Encoded}] = Entries,
+            Offset = Timestamp(Encoded),
+            ?assert(Offset =< -100 andalso Offset > -1100)
+        end
+     || {Algorithm, Value, Timestamp} <:- [
+            {token_bucket, fun(T) -> {5.0, T} end, fun({_, T}) -> T end},
+            {leaky_bucket, fun(T) -> {5.0, T} end, fun({_, T}) -> T end},
+            {sliding_window, fun(T) -> {1, 2, T} end, fun({_, _, T}) -> T end},
+            {gcra, fun(T) -> T end, fun(T) -> T end}
+        ]
+    ],
+    ok.
+
+close_windows_merge_counts() ->
+    {Gossip, State} = gossip_limiter(close_windows, sliding_window),
+    WinStart = erlang:monotonic_time(millisecond),
+    ok = seki_backend_pg:put(State, k, {1, 5, WinStart}),
+    gen_server:cast(Gossip, {seki_gossip, 2, sliding_window, [{k, {2, 3, 10}}]}),
+    {error, unknown} = gen_server:call(Gossip, sync),
+    Result = seki_backend_pg:get(State, k),
+    seki:delete_limiter(close_windows),
+    ?assertEqual({ok, {2, 5, WinStart}}, Result).
+
+distant_windows_take_newer() ->
+    {Gossip, State} = gossip_limiter(distant_windows, sliding_window),
+    WinStart = erlang:monotonic_time(millisecond),
+    ok = seki_backend_pg:put(State, k, {1, 5, WinStart}),
+    gen_server:cast(Gossip, {seki_gossip, 2, sliding_window, [{k, {2, 3, 2000}}]}),
+    {error, unknown} = gen_server:call(Gossip, sync),
+    {ok, {2, 3, RemoteStart}} = seki_backend_pg:get(State, k),
+    seki:delete_limiter(distant_windows),
+    ?assert(RemoteStart >= WinStart + 2000).
+
+standalone_values_are_verbatim() ->
+    Group = {standalone_test, make_ref()},
+    {ok, State} = seki_backend_pg:init(#{
+        table_name => standalone_test, group => Group, gossip_interval => 3600000
+    }),
+    {ok, 42} = seki_backend_pg:update(State, k, fun(_) -> 42 end, 0),
+    ok = pg:join(seki_pg, Group, self()),
+    try
+        gossip_pid(State) ! gossip,
+        receive
+            {'$gen_cast', {seki_gossip, 2, undefined, Entries}} ->
+                ?assertEqual([{k, 42}], Entries)
+        after 2000 -> ?assert(false)
+        end
+    after
+        pg:leave(seki_pg, Group, self()),
+        seki_backend_pg:terminate(State)
+    end.
+
+other_algorithm_is_ignored() ->
+    {Gossip, State} = gossip_limiter(other_algorithm, gcra),
+    gen_server:cast(Gossip, {seki_gossip, 2, token_bucket, [{k, {5.0, 0}}]}),
+    {error, unknown} = gen_server:call(Gossip, sync),
+    Result = seki_backend_pg:get(State, k),
+    seki:delete_limiter(other_algorithm),
+    ?assertEqual(not_found, Result).
+
+capture_gossip(Name, Gossip, Algorithm) ->
+    Group = {seki_limiters, list_to_atom("seki_limiter_" ++ atom_to_list(Name))},
+    ok = pg:join(seki_pg, Group, self()),
+    try
+        Gossip ! gossip,
+        receive
+            {'$gen_cast', {seki_gossip, 2, Algorithm, Entries}} -> Entries
+        after 2000 -> error(no_gossip)
+        end
+    after
+        pg:leave(seki_pg, Group, self())
+    end.
+
 gossip_limiter(Name) ->
+    gossip_limiter(Name, gcra).
+
+gossip_limiter(Name, Algorithm) ->
     ok = seki:new_limiter(Name, #{
-        algorithm => gcra,
+        algorithm => Algorithm,
         limit => 10,
         window => 1000,
         backend => seki_backend_pg,
         backend_opts => #{gossip_interval => 3600000}
     }),
-    {gcra, seki_backend_pg, State, _} = seki_limiter_registry:lookup(Name),
+    {Algorithm, seki_backend_pg, State, _} = seki_limiter_registry:lookup(Name),
     {gossip_pid(State), State}.
 
 gossip_pid(State) when is_tuple(State) ->
