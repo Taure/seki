@@ -118,7 +118,7 @@ merge_entries_for_test(Tab, Entries) ->
 merge_entries(Tab, Entries) ->
     lists:foreach(
         fun({Key, RemoteValue}) ->
-            _ = seki_ets:atomic_update(Tab, Key, {?MODULE, merge_step, [RemoteValue]})
+            _ = seki_ets:atomic_update_stored(Tab, Key, {?MODULE, merge_step, [RemoteValue]})
         end,
         Entries
     ).

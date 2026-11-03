@@ -50,14 +50,12 @@ non_literal_keys_test_() ->
 non_literal_key(Key) ->
     Tab = new_tab(),
     Others = [{other, 0}, {{a, b}, 0}, {[x, y], 0}, {#{a => 1, b => 2}, 0}, {'$1x', 0}],
-    true = ets:insert(Tab, Others),
+    _ = [ok = seki_ets:insert(Tab, K, V) || {K, V} <:- Others],
     Step = {?MODULE, counting_step, []},
     ?assertEqual({ok, 1}, seki_ets:atomic_update(Tab, Key, Step)),
     ?assertEqual({ok, 2}, seki_ets:atomic_update(Tab, Key, Step)),
-    ?assertEqual([{Key, 2}], ets:lookup(Tab, Key)),
-    ?assertEqual(
-        lists:sort(Others), lists:sort([O || {K, _} = O <:- ets:tab2list(Tab), K =/= Key])
-    ).
+    ?assertEqual({ok, 2}, seki_ets:lookup(Tab, Key)),
+    ?assertEqual([{ok, V} || {_, V} <:- Others], [seki_ets:lookup(Tab, K) || {K, _} <:- Others]).
 
 non_literal_values_test() ->
     Tab = new_tab(),

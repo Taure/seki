@@ -71,14 +71,10 @@ init(Opts) ->
     }}.
 
 get(#state{local_tab = Tab}, Key) ->
-    case ets:lookup(Tab, Key) of
-        [{Key, Value}] -> {ok, Value};
-        [] -> not_found
-    end.
+    seki_ets:lookup(Tab, Key).
 
 put(#state{local_tab = Tab}, Key, Value) ->
-    true = ets:insert(Tab, {Key, Value}),
-    ok.
+    seki_ets:insert(Tab, Key, Value).
 
 update(#state{local_tab = Tab}, Key, Fun, Default) ->
     seki_ets:update(Tab, Key, Fun, Default).
@@ -87,8 +83,7 @@ atomic_update(#state{local_tab = Tab}, Key, Step) ->
     seki_ets:atomic_update(Tab, Key, Step).
 
 delete(#state{local_tab = Tab}, Key) ->
-    true = ets:delete(Tab, Key),
-    ok.
+    seki_ets:delete(Tab, Key).
 
 cleanup(#state{local_tab = Tab}, OlderThan) ->
     seki_ets:cleanup(Tab, OlderThan).
