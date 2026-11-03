@@ -180,20 +180,19 @@ or any other store:
 -module(my_redis_backend).
 -behaviour(seki_backend).
 
--export([init/1, read/2, write/3, delete/2]).
+-export([init/1, get/2, put/3, update/4, atomic_update/3, delete/2, cleanup/2, terminate/1]).
 
-init(Opts) ->
-    {ok, Opts}.
-
-read(State, Key) ->
-    %% Read from Redis
-    ...
-
-write(State, Key, Value) ->
-    %% Write to Redis
-    ...
-
-delete(State, Key) ->
-    %% Delete from Redis
+atomic_update(State, Key, {Module, Function, Args}) ->
+    %% Read Key as Current (not_found or {ok, Value}), then
+    %% apply(Module, Function, [Current | Args]) returns
+    %% {Result, keep} or {Result, {write, NewValue}}.
+    %% Write NewValue only if Key still holds the value that was read
+    %% (e.g. WATCH/MULTI or a Lua script in Redis), otherwise retry.
+    %% Return {ok, Result}, or {error, contention} to deny the check.
     ...
 ```
+
+`seki:check/3` runs every check through `atomic_update/3`, so concurrent checks of
+one key cannot let more requests through than the limit allows. The callback is
+optional: a backend without it falls back to `get/2` then `put/3`, which is not
+atomic. See the `seki_backend` module docs for the full contract.

@@ -30,5 +30,12 @@ init([]) ->
             id => seki_limiter_registry,
             start => {seki_limiter_registry, start_link, []}
         }
+        | ets_workers()
     ],
     {ok, {SupFlags, Children}}.
+
+ets_workers() ->
+    [
+        #{id => Name, start => {seki_ets_worker, start_link, [Name]}}
+     || Name <- seki_ets_worker:names()
+    ].

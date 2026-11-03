@@ -15,7 +15,8 @@ Used internally by `seki_backend_pg`.
 -export([
     start_link/1,
     stop/1,
-    merge_entries_for_test/2
+    merge_entries_for_test/2,
+    merge_step/2
 ]).
 
 -export([
@@ -117,16 +118,19 @@ merge_entries_for_test(Tab, Entries) ->
 merge_entries(Tab, Entries) ->
     lists:foreach(
         fun({Key, RemoteValue}) ->
-            case ets:lookup(Tab, Key) of
-                [] ->
-                    ets:insert(Tab, {Key, RemoteValue});
-                [{Key, LocalValue}] ->
-                    Merged = merge_value(LocalValue, RemoteValue),
-                    ets:insert(Tab, {Key, Merged})
-            end
+            _ = seki_ets:atomic_update(Tab, Key, {?MODULE, merge_step, [RemoteValue]})
         end,
         Entries
     ).
+
+-doc false.
+merge_step(not_found, RemoteValue) ->
+    {ok, {write, RemoteValue}};
+merge_step({ok, LocalValue}, RemoteValue) ->
+    case merge_value(LocalValue, RemoteValue) of
+        LocalValue -> {ok, keep};
+        Merged -> {ok, {write, Merged}}
+    end.
 
 %% Merge strategies based on value shape.
 %%

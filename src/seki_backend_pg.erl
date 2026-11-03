@@ -5,7 +5,9 @@ Distributed rate limiter backend using Erlang's `pg` module.
 
 Each node maintains local ETS counters. A gossip process (`seki_pg_gossip`)
 periodically broadcasts state to peers, which merge using last-writer-wins.
-Eventually consistent — suitable for most rate limiting use cases.
+Local updates are atomic per key, like `seki_backend_ets`; gossip merges use
+the same compare-and-swap so they never overwrite a concurrent local check.
+Across nodes the state is eventually consistent — suitable for most rate limiting use cases.
 
 ## Options
 
@@ -21,6 +23,7 @@ Eventually consistent — suitable for most rate limiting use cases.
     get/2,
     put/3,
     update/4,
+    atomic_update/3,
     delete/2,
     cleanup/2,
     terminate/1
@@ -46,8 +49,7 @@ init(Opts) ->
     Tab = ets:new(TableName, [
         set,
         public,
-        {read_concurrency, true},
-        {write_concurrency, true}
+        {write_concurrency, auto}
     ]),
     %% Start gossip process
     GossipInterval = maps:get(gossip_interval, Opts, 1000),
@@ -79,36 +81,17 @@ put(#state{local_tab = Tab}, Key, Value) ->
     ok.
 
 update(#state{local_tab = Tab}, Key, Fun, Default) ->
-    NewValue =
-        case ets:lookup(Tab, Key) of
-            [{Key, Value}] -> Fun(Value);
-            [] -> Fun(Default)
-        end,
-    true = ets:insert(Tab, {Key, NewValue}),
-    {ok, NewValue}.
+    seki_ets:update(Tab, Key, Fun, Default).
+
+atomic_update(#state{local_tab = Tab}, Key, Step) ->
+    seki_ets:atomic_update(Tab, Key, Step).
 
 delete(#state{local_tab = Tab}, Key) ->
     true = ets:delete(Tab, Key),
     ok.
 
 cleanup(#state{local_tab = Tab}, OlderThan) ->
-    Now = erlang:monotonic_time(millisecond),
-    Cutoff = Now - OlderThan,
-    ets:foldl(
-        fun
-            ({Key, {_, _, Ts}}, Acc) when Ts < Cutoff ->
-                ets:delete(Tab, Key),
-                Acc;
-            ({Key, {_, Ts}}, Acc) when Ts < Cutoff ->
-                ets:delete(Tab, Key),
-                Acc;
-            (_, Acc) ->
-                Acc
-        end,
-        ok,
-        Tab
-    ),
-    ok.
+    seki_ets:cleanup(Tab, OlderThan).
 
 terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
     logger:info(
