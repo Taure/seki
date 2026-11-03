@@ -65,9 +65,10 @@ step(not_found, token_bucket, Cost, Now, #{window := Window, burst := Burst}) ->
         false ->
             {{deny, #{retry_after => trunc(Cost / RefillRate)}}, keep}
     end;
-step({ok, {Tokens, LastRefill}}, token_bucket, Cost, Now, #{window := Window, burst := Burst}) ->
+step({ok, {Tokens, LastRefill}}, token_bucket, Cost, Now0, #{window := Window, burst := Burst}) ->
     RefillRate = Burst / Window,
-    Elapsed = max(0, Now - LastRefill),
+    Now = max(Now0, LastRefill),
+    Elapsed = Now - LastRefill,
     Refilled = min(Burst * 1.0, Tokens + Elapsed * RefillRate),
     Remaining = Refilled - Cost,
     case Remaining >= 0 of
@@ -144,9 +145,10 @@ step(not_found, leaky_bucket, Cost, Now, #{limit := Limit, window := Window}) ->
         false ->
             {{deny, #{retry_after => trunc(Cost / DrainRate)}}, keep}
     end;
-step({ok, {Level, LastDrain}}, leaky_bucket, Cost, Now, #{limit := Limit, window := Window}) ->
+step({ok, {Level, LastDrain}}, leaky_bucket, Cost, Now0, #{limit := Limit, window := Window}) ->
     DrainRate = Limit / Window,
-    Elapsed = max(0, Now - LastDrain),
+    Now = max(Now0, LastDrain),
+    Elapsed = Now - LastDrain,
     Drained = max(0.0, Level - Elapsed * DrainRate),
     NewLevel = Drained + Cost,
     case NewLevel =< Limit of

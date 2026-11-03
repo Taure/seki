@@ -28,6 +28,17 @@ concurrent_check_test_() ->
         Backend <:- [seki_backend_ets, seki_backend_pg]
     ]}.
 
+short_window_test_() ->
+    {setup, fun setup/0, fun cleanup/1, [
+        {timeout, 60,
+            {
+                lists:flatten(io_lib:format("~p/~p stays within rate", [Algorithm, Backend])),
+                fun() -> stays_within_rate(Algorithm, Backend) end
+            }}
+     || Algorithm <:- [token_bucket, sliding_window, gcra, leaky_bucket],
+        Backend <:- [seki_backend_ets, seki_backend_pg]
+    ]}.
+
 gossip_merge_during_checks_test_() ->
     {setup, fun setup/0, fun cleanup/1,
         {timeout, 60,
@@ -115,6 +126,47 @@ exactly_limit_allowed(Algorithm, Backend) ->
     Allowed = [run_round(Name, {round, Round}) || Round <:- lists:seq(1, ?ROUNDS)],
     seki:delete_limiter(Name),
     ?assertEqual(lists:duplicate(?ROUNDS, ?LIMIT), Allowed).
+
+stays_within_rate(Algorithm, Backend) ->
+    Name = list_to_atom(
+        lists:flatten(io_lib:format("rate_~p_~p", [Algorithm, Backend]))
+    ),
+    Window = 1000,
+    ok = seki:new_limiter(Name, #{
+        algorithm => Algorithm,
+        limit => ?LIMIT,
+        window => Window,
+        backend => Backend,
+        backend_opts => #{table_name => Name, gossip_interval => ?WINDOW}
+    }),
+    Parent = self(),
+    Start = erlang:monotonic_time(millisecond),
+    End = Start + 2000,
+    Pids = [
+        spawn_link(fun() -> Parent ! {allowed, self(), hammer(Name, End, 0)} end)
+     || _ <:- lists:seq(1, ?PROCS)
+    ],
+    Allowed = lists:sum([
+        receive
+            {allowed, Pid, Count} -> Count
+        end
+     || Pid <:- Pids
+    ]),
+    Elapsed = erlang:monotonic_time(millisecond) - Start,
+    seki:delete_limiter(Name),
+    Ceiling = ?LIMIT + ?LIMIT * Elapsed div Window + 1,
+    ?assertMatch(N when N =< Ceiling, Allowed).
+
+hammer(Name, End, Count) ->
+    case erlang:monotonic_time(millisecond) >= End of
+        true ->
+            Count;
+        false ->
+            case seki:check(Name, hot) of
+                {allow, _} -> hammer(Name, End, Count + 1);
+                {deny, _} -> hammer(Name, End, Count)
+            end
+    end.
 
 run_round(Name, Key) ->
     Parent = self(),
