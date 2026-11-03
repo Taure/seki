@@ -10,7 +10,10 @@ worker_test_() ->
             {"one worker per scheduler", fun workers_started/0},
             {"contended key runs on its worker", fun contended_key_runs_on_worker/0},
             {"errors in a step reach the caller", fun step_error_reaches_caller/0},
-            {"stopped workers fall back to a local loop", fun stopped_worker_falls_back/0}
+            {"stopped workers fall back to a local loop", fun stopped_worker_falls_back/0},
+            {"unpublished worker names fall back to a local loop",
+                fun unpublished_names_fall_back/0},
+            {timeout, 30, {"a step past its deadline is not run", fun expired_step_is_not_run/0}}
         ]}.
 
 workers_started() ->
@@ -23,7 +26,8 @@ contended_key_runs_on_worker() ->
     {ok, Pid} = seki_ets:atomic_update(
         Tab, key, {?MODULE, conflict_once_step, [Tab, key, Counter]}
     ),
-    ?assert(lists:member(Pid, [whereis(Name) || Name <:- seki_ets_worker:names()])),
+    {worker, Name} = seki_ets_worker:route(Tab, key),
+    ?assertEqual(whereis(Name), Pid),
     ?assertEqual([{key, done}], ets:lookup(Tab, key)).
 
 step_error_reaches_caller() ->
@@ -45,6 +49,38 @@ stopped_worker_falls_back() ->
     after
         {ok, _} = application:ensure_all_started(seki)
     end.
+
+unpublished_names_fall_back() ->
+    {Tab, Counter} = setup_conflict(),
+    true = persistent_term:erase({seki_ets_worker, names}),
+    try
+        ?assertEqual(local, seki_ets_worker:route(Tab, key)),
+        {ok, Pid} = seki_ets:atomic_update(
+            Tab, key, {?MODULE, conflict_once_step, [Tab, key, Counter]}
+        ),
+        ?assertEqual(self(), Pid)
+    after
+        ok = seki_ets_worker:publish_names(seki_ets_worker:names())
+    end.
+
+expired_step_is_not_run() ->
+    {Tab, Counter} = setup_conflict(),
+    {worker, Name} = seki_ets_worker:route(Tab, key),
+    ok = sys:suspend(Name),
+    {Result, Interfering} =
+        try
+            {
+                seki_ets:atomic_update(
+                    Tab, key, {?MODULE, conflict_once_step, [Tab, key, Counter]}
+                ),
+                ets:lookup(Tab, key)
+            }
+        after
+            ok = sys:resume(Name)
+        end,
+    _ = sys:get_state(Name),
+    ?assertEqual({error, contention}, Result),
+    ?assertEqual(Interfering, ets:lookup(Tab, key)).
 
 setup_conflict() ->
     Tab = ets:new(?MODULE, [set, public]),

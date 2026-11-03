@@ -35,7 +35,6 @@ init([]) ->
     {ok, {SupFlags, Children}}.
 
 ets_workers() ->
-    [
-        #{id => Name, start => {seki_ets_worker, start_link, [Name]}}
-     || Name <- seki_ets_worker:names()
-    ].
+    Names = seki_ets_worker:names(),
+    ok = seki_ets_worker:publish_names(Names),
+    [#{id => Name, start => {seki_ets_worker, start_link, [Name]}} || Name <- Names].
