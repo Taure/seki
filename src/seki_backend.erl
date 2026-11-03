@@ -20,8 +20,10 @@ step. Steps are pure, so running one more than once is safe. Return
 `{ok, Result}`, or `{error, contention}` after giving up, which `seki:check/3`
 turns into a deny.
 
-A backend that does not export `atomic_update/3` falls back to `get/2` then
-`put/3`. That is not atomic: concurrent checks of one key can then let more
+`seki:new_limiter/2` refuses a backend that does not export `atomic_update/3`
+with `{error, {backend_not_atomic, Backend}}`, unless the limiter is created
+with `allow_non_atomic => true`. Such a limiter checks with `get/2` then
+`put/3`, which is not atomic: concurrent checks of one key can then let more
 requests through than the limit allows.
 
 `update/4` must be atomic too, and may call `Fun` more than once.

@@ -46,7 +46,7 @@ gossip_merge_during_checks_test_() ->
 
 fallback_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
-        {"backend without atomic_update still limits", fun nonatomic_backend/0},
+        {"backend without atomic_update needs an opt-in", fun nonatomic_backend/0},
         {"contention denies", fun contention_denies/0}
     ]}.
 
@@ -90,13 +90,18 @@ merge_stale(Tab, Entry) ->
     merge_stale(Tab, Entry).
 
 nonatomic_backend() ->
-    ok = seki:new_limiter(conc_nonatomic, #{
+    Opts = #{
         algorithm => sliding_window,
         limit => 2,
         window => ?WINDOW,
         backend => seki_nonatomic_backend,
         backend_opts => #{table_name => conc_nonatomic}
-    }),
+    },
+    ?assertEqual(
+        {error, {backend_not_atomic, seki_nonatomic_backend}},
+        seki:new_limiter(conc_nonatomic, Opts)
+    ),
+    ok = seki:new_limiter(conc_nonatomic, Opts#{allow_non_atomic => true}),
     {allow, #{remaining := 1}} = seki:check(conc_nonatomic, key),
     {allow, #{remaining := 0}} = seki:check(conc_nonatomic, key),
     {deny, _} = seki:check(conc_nonatomic, key),

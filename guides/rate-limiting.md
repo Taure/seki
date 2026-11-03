@@ -200,6 +200,7 @@ atomic_update(State, Key, {Module, Function, Args}) ->
 ```
 
 `seki:check/3` runs every check through `atomic_update/3`, so concurrent checks of
-one key cannot let more requests through than the limit allows. The callback is
-optional: a backend without it falls back to `get/2` then `put/3`, which is not
-atomic. See the `seki_backend` module docs for the full contract.
+one key cannot let more requests through than the limit allows. `seki:new_limiter/2`
+refuses a backend without it with `{error, {backend_not_atomic, Backend}}`. To use
+such a backend anyway, pass `allow_non_atomic => true`: checks then use `get/2` and
+`put/3`, which is not atomic. See the `seki_backend` module docs for the full contract.

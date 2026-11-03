@@ -24,23 +24,20 @@ Not called directly — used internally by `seki` via the limiter registry.
 -doc """
 Perform a rate limit check, consuming tokens/capacity. Called by `seki:check/3`.
 
-The read, decision and write happen as one atomic step when the backend
-exports `atomic_update/3`. If the backend gives up under contention the check
-is denied.
+The read, decision and write happen as one atomic step through the backend's
+`atomic_update/3`. If the backend gives up under contention the check is
+denied. Backends registered with `allow_non_atomic => true` use `get/2` then
+`put/3` instead.
 """.
 -doc #{since => <<"0.1.0">>}.
+check(Algorithm, Backend, State, Key, Cost, Now, #{atomic := false} = Config) ->
+    {Result, Write} = step(Backend:get(State, Key), Algorithm, Cost, Now, Config),
+    ok = write(Backend, State, Key, Write),
+    Result;
 check(Algorithm, Backend, State, Key, Cost, Now, Config) ->
-    StepArgs = [Algorithm, Cost, Now, Config],
-    case erlang:function_exported(Backend, atomic_update, 3) of
-        true ->
-            case Backend:atomic_update(State, Key, {?MODULE, step, StepArgs}) of
-                {ok, Result} -> Result;
-                {error, contention} -> {deny, #{retry_after => 1}}
-            end;
-        false ->
-            {Result, Write} = step(Backend:get(State, Key), Algorithm, Cost, Now, Config),
-            ok = write(Backend, State, Key, Write),
-            Result
+    case Backend:atomic_update(State, Key, {?MODULE, step, [Algorithm, Cost, Now, Config]}) of
+        {ok, Result} -> Result;
+        {error, contention} -> {deny, #{retry_after => 1}}
     end.
 
 -doc false.

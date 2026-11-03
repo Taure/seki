@@ -72,7 +72,8 @@ and a combined `execute/3` that checks rate limits before calling through a brea
     window := pos_integer(),
     burst => pos_integer(),
     backend => module(),
-    backend_opts => map()
+    backend_opts => map(),
+    allow_non_atomic => boolean()
 }.
 
 -type breaker_opts() :: #{
@@ -110,7 +111,15 @@ and a combined `execute/3` that checks rate limits before calling through a brea
 %% Rate Limiter API
 %%----------------------------------------------------------------------
 
--doc "Create a new rate limiter with the given algorithm and options.".
+-doc """
+Create a new rate limiter with the given algorithm and options.
+
+Returns `{error, already_registered}` if the name is taken, and
+`{error, {backend_not_atomic, Backend}}` if `backend` does not export
+`atomic_update/3`. Such a backend checks with `get/2` then `put/3`, so
+concurrent checks of one key can exceed the limit; pass
+`allow_non_atomic => true` to use it anyway.
+""".
 -spec new_limiter(limiter_name(), limiter_opts()) -> ok | {error, term()}.
 new_limiter(Name, Opts) ->
     seki_limiter_registry:register(Name, Opts).
