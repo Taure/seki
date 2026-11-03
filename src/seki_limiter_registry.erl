@@ -3,6 +3,8 @@
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/0,
     register/2,
@@ -58,7 +60,7 @@ init([]) ->
 handle_call({register, Name, Opts}, _From, State) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
         [_] ->
-            logger:warning("Limiter ~p already registered", [Name], #{domain => [seki]}),
+            ?LOG_DEBUG(#{msg => limiter_already_registered, name => Name}, #{domain => [seki]}),
             {reply, {error, already_registered}, State};
         [] ->
             Algorithm = maps:get(algorithm, Opts),

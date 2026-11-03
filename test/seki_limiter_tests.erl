@@ -2,6 +2,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-export([log/2]).
+
 %%----------------------------------------------------------------------
 %% Setup / Teardown
 %%----------------------------------------------------------------------
@@ -590,6 +592,7 @@ execute_circuit_open() ->
 registry_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"double register fails", fun double_register/0},
+        {"double register logs below notice", fun double_register_quiet/0},
         {"lookup not found raises", fun lookup_not_found/0},
         {"unregister nonexistent is ok", fun unregister_nonexistent/0},
         {"delete then re-register works", fun re_register/0}
@@ -607,6 +610,27 @@ double_register() ->
         window => 1000
     }),
     seki:delete_limiter(reg_dup).
+
+double_register_quiet() ->
+    Opts = #{algorithm => token_bucket, limit => 10, window => 1000},
+    ok = seki:new_limiter(reg_quiet, Opts),
+    ok = logger:add_handler(reg_quiet_handler, ?MODULE, #{
+        level => notice, config => #{pid => self()}
+    }),
+    try
+        {error, already_registered} = seki:new_limiter(reg_quiet, Opts),
+        receive
+            {log_event, Event} -> ?assertEqual(no_log_event, Event)
+        after 100 -> ok
+        end
+    after
+        ok = logger:remove_handler(reg_quiet_handler),
+        seki:delete_limiter(reg_quiet)
+    end.
+
+log(Event, #{config := #{pid := Pid}}) ->
+    Pid ! {log_event, Event},
+    ok.
 
 lookup_not_found() ->
     ?assertError(
