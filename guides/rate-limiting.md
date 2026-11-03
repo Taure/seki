@@ -164,6 +164,13 @@ Each node maintains local state and periodically gossips with peers via Erlang's
 This is eventually consistent — under normal conditions, rate limits converge within
 one gossip interval. During partitions, each node enforces its local view independently.
 
+Each limiter gossips in its own `pg` group, `{seki_limiters, TableName}` by default.
+If you set `group` yourself, use a different group per limiter: limiters that share
+a group merge each other's keys. Timestamps travel relative to the sender's clock,
+so nodes with different uptimes merge correctly. Gossip from seki 0.4.x nodes is
+ignored, so during a rolling upgrade old and new nodes enforce their limits
+independently until every node runs the new version.
+
 ## Telemetry Events
 
 | Event | Measurements | Metadata |

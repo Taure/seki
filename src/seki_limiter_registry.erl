@@ -65,7 +65,9 @@ handle_call({register, Name, Opts}, _From, State) ->
         [] ->
             Algorithm = maps:get(algorithm, Opts),
             Backend = maps:get(backend, Opts, seki_backend_ets),
-            BackendOpts = maps:get(backend_opts, Opts, #{table_name => limiter_table(Name)}),
+            BackendOpts = maps:merge(
+                #{table_name => limiter_table(Name)}, maps:get(backend_opts, Opts, #{})
+            ),
             {ok, BackendState} = Backend:init(BackendOpts),
             Config = build_config(Algorithm, Opts),
             true = ets:insert(?REGISTRY_TAB, {Name, Algorithm, Backend, BackendState, Config}),

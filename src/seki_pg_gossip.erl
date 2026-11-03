@@ -27,6 +27,8 @@ Used internally by `seki_backend_pg`.
     terminate/2
 ]).
 
+-define(GOSSIP_VERSION, 2).
+
 -record(state, {
     scope :: atom(),
     group :: atom(),
@@ -66,8 +68,14 @@ init(#{scope := Scope, group := Group, tab := Tab, interval := Interval}) ->
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown}, State}.
 
-handle_cast({merge, Entries}, #state{tab = Tab} = State) ->
-    merge_entries(Tab, Entries),
+handle_cast({seki_gossip, ?GOSSIP_VERSION, Entries}, #state{tab = Tab} = State) when
+    is_list(Entries)
+->
+    Now = erlang:monotonic_time(millisecond),
+    merge_entries(Tab, [
+        {Key, Value}
+     || {Key, Relative} <- Entries, {ok, Value} <- [from_relative(Relative, Now)]
+    ]),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -96,7 +104,11 @@ schedule_gossip(Interval) ->
     erlang:send_after(Interval, self(), gossip).
 
 broadcast_state(Scope, Group, Tab) ->
-    Entries = ets:tab2list(Tab),
+    Now = erlang:monotonic_time(millisecond),
+    Entries = [
+        {Key, Relative}
+     || {Key, Value} <- ets:tab2list(Tab), {ok, Relative} <- [to_relative(Value, Now)]
+    ],
     case Entries of
         [] ->
             ok;
@@ -106,11 +118,27 @@ broadcast_state(Scope, Group, Tab) ->
             Peers = [P || P <- Members, P =/= Self],
             lists:foreach(
                 fun(Peer) ->
-                    gen_server:cast(Peer, {merge, Entries})
+                    gen_server:cast(Peer, {seki_gossip, ?GOSSIP_VERSION, Entries})
                 end,
                 Peers
             )
     end.
+
+%% Monotonic time differs between nodes by the gap in VM uptime, so timestamps
+%% travel as offsets from the sender's now and are rebased on the receiver's.
+to_relative({Prev, Curr, WinStart}, Now) when
+    is_number(Prev), is_number(Curr), is_number(WinStart)
+->
+    {ok, {Prev, Curr, WinStart - Now}};
+to_relative({Amount, Timestamp}, Now) when is_number(Amount), is_number(Timestamp) ->
+    {ok, {Amount, Timestamp - Now}};
+to_relative(TAT, Now) when is_number(TAT) ->
+    {ok, TAT - Now};
+to_relative(_Value, _Now) ->
+    skip.
+
+from_relative(Relative, Now) ->
+    to_relative(Relative, -Now).
 
 merge_entries_for_test(Tab, Entries) ->
     merge_entries(Tab, Entries).

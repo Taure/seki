@@ -7,12 +7,17 @@ Each node maintains local ETS counters. A gossip process (`seki_pg_gossip`)
 periodically broadcasts state to peers, which merge using last-writer-wins.
 Local updates are atomic per key, like `seki_backend_ets`; gossip merges use
 the same compare-and-swap so they never overwrite a concurrent local check.
-Across nodes the state is eventually consistent — suitable for most rate limiting use cases.
+Gossip sends timestamps relative to the sender's clock and rebases them on the
+receiver, because monotonic time differs between nodes. Messages carry a
+format version; messages from 0.4.x nodes are ignored. Across nodes the state
+is eventually consistent — suitable for most rate limiting use cases.
 
 ## Options
 
 - `scope` — pg scope atom (default: `seki_pg`)
-- `group` — pg group atom (default: `seki_limiters`)
+- `group` — pg group (default: `{seki_limiters, TableName}`, one group per
+  limiter). Limiters that share a group merge each other's keys, so give each
+  limiter its own group.
 - `gossip_interval` — broadcast interval in ms (default: 1000)
 """.
 
@@ -41,8 +46,8 @@ Across nodes the state is eventually consistent — suitable for most rate limit
 
 init(Opts) ->
     Scope = maps:get(scope, Opts, seki_pg),
-    Group = maps:get(group, Opts, seki_limiters),
     TableName = maps:get(table_name, Opts, seki_pg_data),
+    Group = maps:get(group, Opts, {seki_limiters, TableName}),
     %% Ensure pg scope exists
     ok = ensure_pg_scope(Scope),
     %% Local ETS for fast reads/writes

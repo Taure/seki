@@ -89,18 +89,19 @@ gossip_start_stop() ->
 gossip_merge_cast() ->
     ok = ensure_pg_scope(seki_pg),
     Tab = ets:new(gossip_test_2, [set, public]),
-    ets:insert(Tab, {key1, 100}),
+    Now = erlang:monotonic_time(millisecond),
+    ets:insert(Tab, {key1, Now + 100}),
     {ok, Pid} = seki_pg_gossip:start_link(#{
         scope => seki_pg,
         group => gossip_test_group_2,
         tab => Tab,
         interval => 60000
     }),
-    %% Send merge cast with higher GCRA TAT
-    gen_server:cast(Pid, {merge, [{key1, 200}]}),
-    timer:sleep(20),
+    %% Send merge cast with a higher GCRA TAT, relative to the sender's now
+    gen_server:cast(Pid, {seki_gossip, 2, [{key1, 200}]}),
+    {error, unknown} = gen_server:call(Pid, sync),
     [{key1, TAT}] = ets:lookup(Tab, key1),
-    ?assertEqual(200, TAT),
+    ?assert(TAT >= Now + 200),
     seki_pg_gossip:stop(Pid),
     ets:delete(Tab).
 
@@ -124,7 +125,7 @@ gossip_broadcast() ->
     %% Wait for Pid1 to gossip to Pid2
     timer:sleep(100),
     case ets:lookup(Tab2, key1) of
-        [{key1, Val}] -> ?assertEqual(500, Val);
+        [{key1, Val}] -> ?assert(Val >= 500 andalso Val =< 600);
         [] -> ?assert(false)
     end,
     seki_pg_gossip:stop(Pid1),
@@ -195,3 +196,71 @@ merge_gcra_float() ->
     seki_pg_gossip:merge_entries_for_test(Tab, [{key1, 1200}]),
     ?assertEqual([{key1, 1500.25}], ets:lookup(Tab, key1)),
     ets:delete(Tab).
+
+%% Gossip isolation and clock tests
+
+gossip_isolation_test_() ->
+    {setup, fun setup/0, fun cleanup/1, [
+        {timeout, 30, {"default groups keep limiters apart", fun default_groups_are_per_limiter/0}},
+        {"relative timestamps are rebased to the local clock", fun relative_entry_is_rebased/0},
+        {"0.4.3 gossip messages are ignored", fun old_format_is_ignored/0}
+    ]}.
+
+default_groups_are_per_limiter() ->
+    ok = seki:new_limiter(strict_login, #{
+        algorithm => gcra,
+        limit => 5,
+        window => 3600000,
+        backend => seki_backend_pg,
+        backend_opts => #{gossip_interval => 50}
+    }),
+    ok = seki:new_limiter(loose_api, #{
+        algorithm => gcra,
+        limit => 1000,
+        window => 1000,
+        backend => seki_backend_pg,
+        backend_opts => #{gossip_interval => 50}
+    }),
+    Key = {10, 0, 0, 7},
+    {allow, _} = seki:check(loose_api, Key),
+    _ = [seki:check(strict_login, Key) || _ <:- lists:seq(1, 6)],
+    {deny, _} = seki:check(strict_login, Key),
+    timer:sleep(300),
+    Result = seki:check(loose_api, Key),
+    seki:delete_limiter(strict_login),
+    seki:delete_limiter(loose_api),
+    ?assertMatch({allow, _}, Result).
+
+relative_entry_is_rebased() ->
+    {Gossip, State} = gossip_limiter(rebase_gcra),
+    Tau = 900.0,
+    Before = erlang:monotonic_time(millisecond),
+    gen_server:cast(Gossip, {seki_gossip, 2, [{key, Tau}]}),
+    {error, unknown} = gen_server:call(Gossip, sync),
+    After = erlang:monotonic_time(millisecond),
+    {ok, TAT} = seki_backend_pg:get(State, key),
+    seki:delete_limiter(rebase_gcra),
+    ?assert(TAT >= Before + Tau),
+    ?assert(TAT =< After + Tau).
+
+old_format_is_ignored() ->
+    {Gossip, State} = gossip_limiter(old_format_gcra),
+    gen_server:cast(Gossip, {merge, [{key, erlang:monotonic_time(millisecond) + 3600000}]}),
+    {error, unknown} = gen_server:call(Gossip, sync),
+    Result = seki_backend_pg:get(State, key),
+    seki:delete_limiter(old_format_gcra),
+    ?assertEqual(not_found, Result).
+
+gossip_limiter(Name) ->
+    ok = seki:new_limiter(Name, #{
+        algorithm => gcra,
+        limit => 10,
+        window => 1000,
+        backend => seki_backend_pg,
+        backend_opts => #{gossip_interval => 3600000}
+    }),
+    {gcra, seki_backend_pg, State, _} = seki_limiter_registry:lookup(Name),
+    {gossip_pid(State), State}.
+
+gossip_pid(State) when is_tuple(State) ->
+    element(3, State).
