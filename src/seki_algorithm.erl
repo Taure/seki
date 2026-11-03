@@ -26,8 +26,8 @@ Perform a rate limit check, consuming tokens/capacity. Called by `seki:check/3`.
 
 The read, decision and write happen as one atomic step through the backend's
 `atomic_update/3`. If the backend gives up under contention the check is
-denied and `[seki, rate_limit, contention]` is emitted. Backends registered with `allow_non_atomic => true` use `get/2` then
-`put/3` instead.
+denied and `[seki, rate_limit, contention]` is emitted. Backends registered
+with `allow_non_atomic => true` use `get/2` then `put/3` instead.
 """.
 -doc #{since => <<"0.1.0">>}.
 check(Algorithm, Backend, State, Key, Cost, Now, #{atomic := false} = Config) ->
@@ -43,8 +43,6 @@ check(Algorithm, Backend, State, Key, Cost, Now, Config) ->
             {deny, #{retry_after => 1}}
     end.
 
--doc false.
-
 %%----------------------------------------------------------------------
 %% Token Bucket
 %%
@@ -53,6 +51,7 @@ check(Algorithm, Backend, State, Key, Cost, Now, Config) ->
 %% State: {Tokens :: float(), LastRefill :: integer()}
 %%----------------------------------------------------------------------
 
+-doc false.
 step(not_found, token_bucket, Cost, Now, #{window := Window, burst := Burst}) ->
     RefillRate = Burst / Window,
     NewTokens = Burst - Cost,

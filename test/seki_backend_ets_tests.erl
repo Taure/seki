@@ -26,7 +26,7 @@ keys_round_trip_test() ->
         #{ip => 1, port => 2},
         {seki_escaped_key, term_to_binary(#{ip => 1}, [deterministic])},
         {ip, 1},
-        <<"user">>
+        ~"user"
     ],
     try
         _ = [ok = seki_backend_ets:put(Tab, Key, N) || {N, Key} <:- lists:enumerate(Keys)],
