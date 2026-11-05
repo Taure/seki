@@ -4,6 +4,8 @@ Resilience library for the BEAM — circuit breaking, rate limiting, bulkheads, 
 
 Works natively from Erlang, Elixir, Gleam, and LFE.
 
+It covers what [fuse](https://github.com/jlouis/fuse) (circuit breaking) and [Hammer](https://github.com/ExHammer/hammer) (rate limiting) do, plus bulkheads and retry, in one library.
+
 ## Features
 
 - **Rate Limiting** — Token bucket, sliding window (Cloudflare-style), GCRA, leaky bucket
@@ -21,7 +23,7 @@ Works natively from Erlang, Elixir, Gleam, and LFE.
 ```erlang
 %% rebar.config
 {deps, [
-    {seki, "~> 0.1"}
+    {seki, "~> 0.4"}
 ]}.
 ```
 
@@ -31,7 +33,7 @@ Works natively from Erlang, Elixir, Gleam, and LFE.
 # mix.exs
 defp deps do
   [
-    {:seki, "~> 0.1"}
+    {:seki, "~> 0.4"}
   ]
 end
 ```
