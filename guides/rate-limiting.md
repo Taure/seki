@@ -164,12 +164,28 @@ Each node maintains local state and periodically gossips with peers via Erlang's
 This is eventually consistent — under normal conditions, rate limits converge within
 one gossip interval. During partitions, each node enforces its local view independently.
 
+Each limiter gossips in its own `pg` group, `{seki_limiters, TableName}` by default.
+If you set `group` yourself, use a different group per limiter: limiters that share
+a group merge each other's keys. Timestamps travel relative to the sender's clock,
+so nodes with different uptimes merge token bucket, leaky bucket and GCRA state
+correctly. Each node aligns sliding windows to its own clock, so windows that
+start less than one window apart are merged as the same window, keeping the higher
+counts. Configure a limiter with the same algorithm on every node: gossip for
+another algorithm is ignored. Gossip from seki 0.4.x nodes is ignored too, so
+during a rolling upgrade old and new nodes enforce their limits independently
+until every node runs the new version.
+
 ## Telemetry Events
 
 | Event | Measurements | Metadata |
 |-------|-------------|----------|
 | `[seki, rate_limit, allow]` | `remaining`, `cost` | `name`, `key` |
 | `[seki, rate_limit, deny]` | `retry_after`, `cost` | `name`, `key` |
+| `[seki, rate_limit, contention]` | `count` | `key` |
+
+A `contention` event means a check was denied because its key stayed contended
+past the worker deadline (1 s) or 1000 compare-and-swap attempts. The denial also
+emits `deny` with `retry_after => 1`.
 
 ## Custom Backends
 
@@ -180,20 +196,20 @@ or any other store:
 -module(my_redis_backend).
 -behaviour(seki_backend).
 
--export([init/1, read/2, write/3, delete/2]).
+-export([init/1, get/2, put/3, update/4, atomic_update/3, delete/2, cleanup/2, terminate/1]).
 
-init(Opts) ->
-    {ok, Opts}.
-
-read(State, Key) ->
-    %% Read from Redis
-    ...
-
-write(State, Key, Value) ->
-    %% Write to Redis
-    ...
-
-delete(State, Key) ->
-    %% Delete from Redis
+atomic_update(State, Key, {Module, Function, Args}) ->
+    %% Read Key as Current (not_found or {ok, Value}), then
+    %% apply(Module, Function, [Current | Args]) returns
+    %% {Result, keep} or {Result, {write, NewValue}}.
+    %% Write NewValue only if Key still holds the value that was read
+    %% (e.g. WATCH/MULTI or a Lua script in Redis), otherwise retry.
+    %% Return {ok, Result}, or {error, contention} to deny the check.
     ...
 ```
+
+`seki:check/3` runs every check through `atomic_update/3`, so concurrent checks of
+one key cannot let more requests through than the limit allows. `seki:new_limiter/2`
+refuses a backend without it with `{error, {backend_not_atomic, Backend}}`. To use
+such a backend anyway, pass `allow_non_atomic => true`: checks then use `get/2` and
+`put/3`, which is not atomic. See the `seki_backend` module docs for the full contract.

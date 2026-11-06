@@ -3,6 +3,8 @@
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/0,
     register/2,
@@ -58,16 +60,16 @@ init([]) ->
 handle_call({register, Name, Opts}, _From, State) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
         [_] ->
-            logger:warning("Limiter ~p already registered", [Name], #{domain => [seki]}),
+            ?LOG_DEBUG(#{msg => limiter_already_registered, name => Name}, #{domain => [seki]}),
             {reply, {error, already_registered}, State};
         [] ->
-            Algorithm = maps:get(algorithm, Opts),
             Backend = maps:get(backend, Opts, seki_backend_ets),
-            BackendOpts = maps:get(backend_opts, Opts, #{table_name => limiter_table(Name)}),
-            {ok, BackendState} = Backend:init(BackendOpts),
-            Config = build_config(Algorithm, Opts),
-            true = ets:insert(?REGISTRY_TAB, {Name, Algorithm, Backend, BackendState, Config}),
-            {reply, ok, State#{Name => BackendState}}
+            case is_atomic(Backend) orelse maps:get(allow_non_atomic, Opts, false) of
+                true ->
+                    {reply, ok, start_limiter(Name, Backend, Opts, State)};
+                false ->
+                    {reply, {error, {backend_not_atomic, Backend}}, State}
+            end
     end;
 handle_call({unregister, Name}, _From, State) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
@@ -106,6 +108,21 @@ terminate(_Reason, _State) ->
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
+
+start_limiter(Name, Backend, Opts, State) ->
+    Algorithm = maps:get(algorithm, Opts),
+    BackendOpts = maps:merge(
+        #{table_name => limiter_table(Name)}, maps:get(backend_opts, Opts, #{})
+    ),
+    Limiter = #{algorithm => Algorithm, window => maps:get(window, Opts)},
+    {ok, BackendState} = Backend:init(BackendOpts#{seki_limiter => Limiter}),
+    Config = (build_config(Algorithm, Opts))#{atomic => is_atomic(Backend)},
+    true = ets:insert(?REGISTRY_TAB, {Name, Algorithm, Backend, BackendState, Config}),
+    State#{Name => BackendState}.
+
+is_atomic(Backend) ->
+    _ = code:ensure_loaded(Backend),
+    erlang:function_exported(Backend, atomic_update, 3).
 
 limiter_table(Name) ->
     list_to_atom("seki_limiter_" ++ atom_to_list(Name)).

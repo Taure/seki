@@ -17,11 +17,31 @@ Not called directly — used internally by `seki` via the limiter registry.
 
 -export([
     check/7,
+    step/5,
     inspect/7
 ]).
 
--doc "Perform a rate limit check, consuming tokens/capacity. Called by `seki:check/3`.".
+-doc """
+Perform a rate limit check, consuming tokens/capacity. Called by `seki:check/3`.
+
+The read, decision and write happen as one atomic step through the backend's
+`atomic_update/3`. If the backend gives up under contention the check is
+denied and `[seki, rate_limit, contention]` is emitted. Backends registered
+with `allow_non_atomic => true` use `get/2` then `put/3` instead.
+""".
 -doc #{since => <<"0.1.0">>}.
+check(Algorithm, Backend, State, Key, Cost, Now, #{atomic := false} = Config) ->
+    {Result, Write} = step(Backend:get(State, Key), Algorithm, Cost, Now, Config),
+    ok = write(Backend, State, Key, Write),
+    Result;
+check(Algorithm, Backend, State, Key, Cost, Now, Config) ->
+    case Backend:atomic_update(State, Key, {?MODULE, step, [Algorithm, Cost, Now, Config]}) of
+        {ok, Result} ->
+            Result;
+        {error, contention} ->
+            telemetry:execute([seki, rate_limit, contention], #{count => 1}, #{key => Key}),
+            {deny, #{retry_after => 1}}
+    end.
 
 %%----------------------------------------------------------------------
 %% Token Bucket
@@ -31,34 +51,35 @@ Not called directly — used internally by `seki` via the limiter registry.
 %% State: {Tokens :: float(), LastRefill :: integer()}
 %%----------------------------------------------------------------------
 
-check(token_bucket, Backend, State, Key, Cost, Now, Config) ->
-    #{limit := _Limit, window := Window, burst := Burst} = Config,
+-doc false.
+step(not_found, token_bucket, Cost, Now, #{window := Window, burst := Burst}) ->
     RefillRate = Burst / Window,
-    case Backend:get(State, Key) of
-        not_found ->
-            NewTokens = Burst - Cost,
-            case NewTokens >= 0 of
-                true ->
-                    Backend:put(State, Key, {NewTokens * 1.0, Now}),
-                    {allow, #{remaining => NewTokens, reset => trunc(Cost / RefillRate)}};
-                false ->
-                    {deny, #{retry_after => trunc(Cost / RefillRate)}}
-            end;
-        {ok, {Tokens, LastRefill}} ->
-            Elapsed = max(0, Now - LastRefill),
-            Refilled = min(Burst * 1.0, Tokens + Elapsed * RefillRate),
-            Remaining = Refilled - Cost,
-            case Remaining >= 0 of
-                true ->
-                    Backend:put(State, Key, {Remaining, Now}),
-                    ResetMs = trunc((Burst - Remaining) / RefillRate),
-                    {allow, #{remaining => trunc(Remaining), reset => ResetMs}};
-                false ->
-                    %% Don't consume, just update refill time
-                    Backend:put(State, Key, {Refilled, Now}),
-                    DeficitMs = trunc((-Remaining) / RefillRate),
-                    {deny, #{retry_after => max(1, DeficitMs)}}
-            end
+    NewTokens = Burst - Cost,
+    case NewTokens >= 0 of
+        true ->
+            {
+                {allow, #{remaining => NewTokens, reset => trunc(Cost / RefillRate)}},
+                {write, {NewTokens * 1.0, Now}}
+            };
+        false ->
+            {{deny, #{retry_after => trunc(Cost / RefillRate)}}, keep}
+    end;
+step({ok, {Tokens, LastRefill}}, token_bucket, Cost, Now0, #{window := Window, burst := Burst}) ->
+    RefillRate = Burst / Window,
+    Now = max(Now0, LastRefill),
+    Elapsed = Now - LastRefill,
+    Refilled = min(Burst * 1.0, Tokens + Elapsed * RefillRate),
+    Remaining = Refilled - Cost,
+    case Remaining >= 0 of
+        true ->
+            ResetMs = trunc((Burst - Remaining) / RefillRate),
+            {
+                {allow, #{remaining => trunc(Remaining), reset => ResetMs}},
+                {write, {Remaining, Now}}
+            };
+        false ->
+            DeficitMs = trunc((-Remaining) / RefillRate),
+            {{deny, #{retry_after => max(1, DeficitMs)}}, {write, {Refilled, Now}}}
     end;
 %%----------------------------------------------------------------------
 %% Sliding Window Counter (Cloudflare-style)
@@ -67,74 +88,43 @@ check(token_bucket, Backend, State, Key, Cost, Now, Config) ->
 %% State: {PrevCount, CurrCount, WindowStart}
 %%----------------------------------------------------------------------
 
-check(sliding_window, Backend, State, Key, Cost, Now, Config) ->
-    #{limit := Limit, window := Window} = Config,
-    Default = {0, 0, window_start(Now, Window)},
-    {ok, NewState} = Backend:update(
-        State,
-        Key,
-        fun({PrevCount, CurrCount, WinStart}) ->
-            case Now >= WinStart + Window of
-                true ->
-                    %% Rolled into new window
-                    NewWinStart = window_start(Now, Window),
-                    case Now >= WinStart + Window * 2 of
-                        true ->
-                            %% Previous window is also expired
-                            {0, Cost, NewWinStart};
-                        false ->
-                            {CurrCount, Cost, NewWinStart}
-                    end;
-                false ->
-                    {PrevCount, CurrCount + Cost, WinStart}
-            end
-        end,
-        Default
-    ),
-    {PrevCount, CurrCount, WinStart} = NewState,
-    Elapsed = Now - WinStart,
-    Weight = max(0.0, (Window - Elapsed) / Window),
-    EstimatedCount = PrevCount * Weight + CurrCount,
+step(Current, sliding_window, Cost, Now, #{limit := Limit, window := Window}) ->
+    {PrevCount, CurrCount, WinStart} = Rolled = roll_window(Current, Now, Window),
+    Weight = max(0.0, (Window - (Now - WinStart)) / Window),
+    EstimatedCount = PrevCount * Weight + CurrCount + Cost,
     case EstimatedCount =< Limit of
         true ->
             Remaining = max(0, trunc(Limit - EstimatedCount)),
             Reset = WinStart + Window - Now,
-            {allow, #{remaining => Remaining, reset => Reset}};
+            {
+                {allow, #{remaining => Remaining, reset => Reset}},
+                {write, {PrevCount, CurrCount + Cost, WinStart}}
+            };
         false ->
-            %% Undo the cost we just added
-            Backend:update(State, Key, fun({P, C, W}) -> {P, C - Cost, W} end, Default),
             RetryAfter = trunc((EstimatedCount - Limit) / (Limit / Window)) + 1,
-            {deny, #{retry_after => RetryAfter}}
+            {{deny, #{retry_after => RetryAfter}}, write_if_rolled(Current, Rolled)}
     end;
 %%----------------------------------------------------------------------
 %% GCRA (Generic Cell Rate Algorithm)
 %%
 %% Only stores one timestamp (TAT - Theoretical Arrival Time) per key.
-%% State: TAT :: integer() (milliseconds)
+%% State: TAT :: number() (milliseconds)
 %%----------------------------------------------------------------------
 
-check(gcra, Backend, State, Key, Cost, Now, Config) ->
-    #{emission_interval := T, burst_tolerance := Tau} = Config,
+step(not_found, gcra, Cost, Now, #{emission_interval := T, limit := Limit}) ->
     Increment = T * Cost,
-    case Backend:get(State, Key) of
-        not_found ->
-            NewTAT = Now + Increment,
-            Backend:put(State, Key, NewTAT),
-            #{limit := Limit} = Config,
-            {allow, #{remaining => Limit - Cost, reset => Increment}};
-        {ok, TAT} ->
-            NewTAT = max(TAT, Now) + Increment,
-            AllowAt = NewTAT - Tau - Increment,
-            case Now >= AllowAt of
-                true ->
-                    Backend:put(State, Key, NewTAT),
-                    Remaining = max(0, trunc((Tau + Increment - (NewTAT - Now)) / T)),
-                    Reset = max(0, NewTAT - Now),
-                    {allow, #{remaining => Remaining, reset => Reset}};
-                false ->
-                    RetryAfter = AllowAt - Now,
-                    {deny, #{retry_after => RetryAfter}}
-            end
+    {{allow, #{remaining => Limit - Cost, reset => Increment}}, {write, Now + Increment}};
+step({ok, TAT}, gcra, Cost, Now, #{emission_interval := T, burst_tolerance := Tau}) ->
+    Increment = T * Cost,
+    NewTAT = max(TAT, Now) + Increment,
+    AllowAt = NewTAT - Tau - Increment,
+    case Now >= AllowAt of
+        true ->
+            Remaining = max(0, trunc((Tau + Increment - (NewTAT - Now)) / T)),
+            Reset = max(0, NewTAT - Now),
+            {{allow, #{remaining => Remaining, reset => Reset}}, {write, NewTAT}};
+        false ->
+            {{deny, #{retry_after => AllowAt - Now}}, keep}
     end;
 %%----------------------------------------------------------------------
 %% Leaky Bucket
@@ -143,35 +133,32 @@ check(gcra, Backend, State, Key, Cost, Now, Config) ->
 %% State: {Level :: float(), LastDrain :: integer()}
 %%----------------------------------------------------------------------
 
-check(leaky_bucket, Backend, State, Key, Cost, Now, Config) ->
-    #{limit := Limit, window := Window} = Config,
+step(not_found, leaky_bucket, Cost, Now, #{limit := Limit, window := Window}) ->
     DrainRate = Limit / Window,
-    case Backend:get(State, Key) of
-        not_found ->
-            case Cost =< Limit of
-                true ->
-                    Backend:put(State, Key, {Cost * 1.0, Now}),
-                    Remaining = Limit - Cost,
-                    {allow, #{remaining => Remaining, reset => trunc(Cost / DrainRate)}};
-                false ->
-                    {deny, #{retry_after => trunc(Cost / DrainRate)}}
-            end;
-        {ok, {Level, LastDrain}} ->
-            Elapsed = max(0, Now - LastDrain),
-            Drained = max(0.0, Level - Elapsed * DrainRate),
-            NewLevel = Drained + Cost,
-            case NewLevel =< Limit of
-                true ->
-                    Backend:put(State, Key, {NewLevel, Now}),
-                    Remaining = max(0, trunc(Limit - NewLevel)),
-                    Reset = trunc(NewLevel / DrainRate),
-                    {allow, #{remaining => Remaining, reset => Reset}};
-                false ->
-                    Backend:put(State, Key, {Drained, Now}),
-                    Overflow = NewLevel - Limit,
-                    RetryAfter = max(1, trunc(Overflow / DrainRate)),
-                    {deny, #{retry_after => RetryAfter}}
-            end
+    case Cost =< Limit of
+        true ->
+            {
+                {allow, #{remaining => Limit - Cost, reset => trunc(Cost / DrainRate)}},
+                {write, {Cost * 1.0, Now}}
+            };
+        false ->
+            {{deny, #{retry_after => trunc(Cost / DrainRate)}}, keep}
+    end;
+step({ok, {Level, LastDrain}}, leaky_bucket, Cost, Now0, #{limit := Limit, window := Window}) ->
+    DrainRate = Limit / Window,
+    Now = max(Now0, LastDrain),
+    Elapsed = Now - LastDrain,
+    Drained = max(0.0, Level - Elapsed * DrainRate),
+    NewLevel = Drained + Cost,
+    case NewLevel =< Limit of
+        true ->
+            Remaining = max(0, trunc(Limit - NewLevel)),
+            Reset = trunc(NewLevel / DrainRate),
+            {{allow, #{remaining => Remaining, reset => Reset}}, {write, {NewLevel, Now}}};
+        false ->
+            Overflow = NewLevel - Limit,
+            RetryAfter = max(1, trunc(Overflow / DrainRate)),
+            {{deny, #{retry_after => RetryAfter}}, {write, {Drained, Now}}}
     end.
 
 %%----------------------------------------------------------------------
@@ -261,3 +248,26 @@ inspect(leaky_bucket, Backend, State, Key, Cost, Now, Config) ->
 
 window_start(Now, Window) ->
     Now - (Now rem Window).
+
+roll_window(not_found, Now, Window) ->
+    {0, 0, window_start(Now, Window)};
+roll_window({ok, {_PrevCount, _CurrCount, WinStart}}, Now, Window) when
+    Now >= WinStart + Window * 2
+->
+    {0, 0, window_start(Now, Window)};
+roll_window({ok, {_PrevCount, CurrCount, WinStart}}, Now, Window) when Now >= WinStart + Window ->
+    {CurrCount, 0, window_start(Now, Window)};
+roll_window({ok, Counts}, _Now, _Window) ->
+    Counts.
+
+write_if_rolled({ok, Rolled}, Rolled) ->
+    keep;
+write_if_rolled(not_found, _Rolled) ->
+    keep;
+write_if_rolled(_Current, Rolled) ->
+    {write, Rolled}.
+
+write(_Backend, _State, _Key, keep) ->
+    ok;
+write(Backend, State, Key, {write, Value}) ->
+    Backend:put(State, Key, Value).

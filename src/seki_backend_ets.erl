@@ -3,9 +3,12 @@
 -moduledoc """
 ETS-based storage backend for rate limiting. Default backend.
 
-Uses a public ETS table with read/write concurrency enabled.
-Suitable for single-node deployments. For distributed rate limiting,
-see `seki_backend_pg`.
+Uses a public ETS table tuned for concurrent writes. Updates are atomic per
+key: a compare-and-swap on the stored value. When another process changed the
+value in between, the update moves to a worker process that owns the key and
+retries there, so contending checks queue instead of spinning. Concurrent
+checks of one key never lose a write. Suitable for single-node deployments.
+For distributed rate limiting, see `seki_backend_pg`.
 """.
 
 -behaviour(seki_backend).
@@ -15,6 +18,7 @@ see `seki_backend_pg`.
     get/2,
     put/3,
     update/4,
+    atomic_update/3,
     delete/2,
     cleanup/2,
     terminate/1
@@ -25,54 +29,27 @@ init(Opts) ->
     Tab = ets:new(TableName, [
         set,
         public,
-        {read_concurrency, true},
-        {write_concurrency, true}
+        {write_concurrency, auto}
     ]),
     {ok, Tab}.
 
 get(Tab, Key) ->
-    case ets:lookup(Tab, Key) of
-        [{Key, Value}] -> {ok, Value};
-        [] -> not_found
-    end.
+    seki_ets:lookup(Tab, Key).
 
 put(Tab, Key, Value) ->
-    true = ets:insert(Tab, {Key, Value}),
-    ok.
+    seki_ets:insert(Tab, Key, Value).
 
 update(Tab, Key, Fun, Default) ->
-    NewValue =
-        case ets:lookup(Tab, Key) of
-            [{Key, Value}] -> Fun(Value);
-            [] -> Fun(Default)
-        end,
-    true = ets:insert(Tab, {Key, NewValue}),
-    {ok, NewValue}.
+    seki_ets:update(Tab, Key, Fun, Default).
+
+atomic_update(Tab, Key, Step) ->
+    seki_ets:atomic_update(Tab, Key, Step).
 
 delete(Tab, Key) ->
-    true = ets:delete(Tab, Key),
-    ok.
+    seki_ets:delete(Tab, Key).
 
 cleanup(Tab, OlderThan) ->
-    Now = erlang:monotonic_time(millisecond),
-    Cutoff = Now - OlderThan,
-    %% Delete entries where the timestamp component is older than cutoff
-    %% Entries are stored as {Key, {State, Timestamp}} or similar
-    ets:foldl(
-        fun
-            ({Key, {_, _, Ts}}, Acc) when Ts < Cutoff ->
-                ets:delete(Tab, Key),
-                Acc;
-            ({Key, {_, Ts}}, Acc) when Ts < Cutoff ->
-                ets:delete(Tab, Key),
-                Acc;
-            (_, Acc) ->
-                Acc
-        end,
-        ok,
-        Tab
-    ),
-    ok.
+    seki_ets:cleanup(Tab, OlderThan).
 
 terminate(Tab) ->
     ets:delete(Tab),

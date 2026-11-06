@@ -5,13 +5,26 @@ Distributed rate limiter backend using Erlang's `pg` module.
 
 Each node maintains local ETS counters. A gossip process (`seki_pg_gossip`)
 periodically broadcasts state to peers, which merge using last-writer-wins.
-Eventually consistent — suitable for most rate limiting use cases.
+Local updates are atomic per key, like `seki_backend_ets`; gossip merges use
+the same compare-and-swap so they never overwrite a concurrent local check.
+
+For a limiter created with `seki:new_limiter/2`, gossip sends the timestamps
+in its state relative to the sender's clock and rebases them on the receiver,
+because monotonic time differs between nodes. Sliding windows that start less
+than one window apart are merged as the same window. Gossip is tagged with the
+limiter's algorithm and a format version; gossip for another algorithm, or
+from 0.4.x nodes, is ignored. Values in a table that no limiter owns, such as
+one written through `update/4` on a standalone backend, are gossiped as they
+are and never rebased. Across nodes the state is eventually consistent, which
+suits most rate limiting use cases.
 
 ## Options
 
-- `scope` — pg scope atom (default: `seki_pg`)
-- `group` — pg group atom (default: `seki_limiters`)
-- `gossip_interval` — broadcast interval in ms (default: 1000)
+- `scope`: pg scope atom (default: `seki_pg`)
+- `group`: pg group (default: `{seki_limiters, TableName}`, one group per
+  limiter). Limiters that share a group merge each other's keys, so give each
+  limiter its own group.
+- `gossip_interval`: broadcast interval in ms (default: 1000)
 """.
 
 -behaviour(seki_backend).
@@ -21,6 +34,7 @@ Eventually consistent — suitable for most rate limiting use cases.
     get/2,
     put/3,
     update/4,
+    atomic_update/3,
     delete/2,
     cleanup/2,
     terminate/1
@@ -38,24 +52,26 @@ Eventually consistent — suitable for most rate limiting use cases.
 
 init(Opts) ->
     Scope = maps:get(scope, Opts, seki_pg),
-    Group = maps:get(group, Opts, seki_limiters),
     TableName = maps:get(table_name, Opts, seki_pg_data),
+    Group = maps:get(group, Opts, {seki_limiters, TableName}),
     %% Ensure pg scope exists
     ok = ensure_pg_scope(Scope),
     %% Local ETS for fast reads/writes
     Tab = ets:new(TableName, [
         set,
         public,
-        {read_concurrency, true},
-        {write_concurrency, true}
+        {write_concurrency, auto}
     ]),
     %% Start gossip process
     GossipInterval = maps:get(gossip_interval, Opts, 1000),
+    Limiter = maps:get(seki_limiter, Opts, #{}),
     {ok, GossipPid} = seki_pg_gossip:start_link(#{
         scope => Scope,
         group => Group,
         tab => Tab,
-        interval => GossipInterval
+        interval => GossipInterval,
+        algorithm => maps:get(algorithm, Limiter, undefined),
+        window => maps:get(window, Limiter, undefined)
     }),
     logger:info(
         "Distributed backend started (scope=~p, group=~p, gossip_interval=~pms)",
@@ -69,46 +85,22 @@ init(Opts) ->
     }}.
 
 get(#state{local_tab = Tab}, Key) ->
-    case ets:lookup(Tab, Key) of
-        [{Key, Value}] -> {ok, Value};
-        [] -> not_found
-    end.
+    seki_ets:lookup(Tab, Key).
 
 put(#state{local_tab = Tab}, Key, Value) ->
-    true = ets:insert(Tab, {Key, Value}),
-    ok.
+    seki_ets:insert(Tab, Key, Value).
 
 update(#state{local_tab = Tab}, Key, Fun, Default) ->
-    NewValue =
-        case ets:lookup(Tab, Key) of
-            [{Key, Value}] -> Fun(Value);
-            [] -> Fun(Default)
-        end,
-    true = ets:insert(Tab, {Key, NewValue}),
-    {ok, NewValue}.
+    seki_ets:update(Tab, Key, Fun, Default).
+
+atomic_update(#state{local_tab = Tab}, Key, Step) ->
+    seki_ets:atomic_update(Tab, Key, Step).
 
 delete(#state{local_tab = Tab}, Key) ->
-    true = ets:delete(Tab, Key),
-    ok.
+    seki_ets:delete(Tab, Key).
 
 cleanup(#state{local_tab = Tab}, OlderThan) ->
-    Now = erlang:monotonic_time(millisecond),
-    Cutoff = Now - OlderThan,
-    ets:foldl(
-        fun
-            ({Key, {_, _, Ts}}, Acc) when Ts < Cutoff ->
-                ets:delete(Tab, Key),
-                Acc;
-            ({Key, {_, Ts}}, Acc) when Ts < Cutoff ->
-                ets:delete(Tab, Key),
-                Acc;
-            (_, Acc) ->
-                Acc
-        end,
-        ok,
-        Tab
-    ),
-    ok.
+    seki_ets:cleanup(Tab, OlderThan).
 
 terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
     logger:info(
