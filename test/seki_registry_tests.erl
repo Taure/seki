@@ -25,7 +25,8 @@ registry_test_() ->
             fun a_limiter_is_named_by_a_term/0,
             fun a_distributed_limiter_named_by_a_term_has_its_own_group/0,
             fun a_named_process_restarts_under_its_name/0,
-            fun naming_by_terms_creates_no_atoms/0
+            fun naming_by_terms_creates_no_atoms/0,
+            fun nothing_is_registered_while_seki_is_stopped/0
         ]}.
 
 an_atom_is_registered_locally() ->
@@ -212,6 +213,15 @@ naming_by_terms_creates_no_atoms() ->
     Before = erlang:system_info(atom_count),
     [Round(Number) || Number <:- lists:seq(1, 50)],
     ?assertEqual(Before, erlang:system_info(atom_count)).
+
+%% As with an atom: a call exits with `noproc`, a cast is dropped.
+nothing_is_registered_while_seki_is_stopped() ->
+    {ok, _} = seki:new_breaker(?NAME, #{}),
+    ok = application:stop(seki),
+    ?assertEqual(undefined, seki_registry:whereis_name(?NAME)),
+    ?assertExit({noproc, _}, seki:state(?NAME)),
+    ?assertExit({noproc, _}, seki:state(seki_registry_tests_no_breaker)),
+    ?assertEqual(ok, seki:reset_breaker(?NAME)).
 
 idle() ->
     spawn(fun() ->

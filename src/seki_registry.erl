@@ -54,7 +54,7 @@ unregister_name(Name) ->
 
 -spec whereis_name(term()) -> pid() | undefined.
 whereis_name(Name) ->
-    case ets:lookup(?TAB, Name) of
+    try ets:lookup(?TAB, Name) of
         [{Name, Pid, _Monitor}] when is_pid(Pid) ->
             case is_process_alive(Pid) of
                 true -> Pid;
@@ -62,6 +62,9 @@ whereis_name(Name) ->
             end;
         _Unregistered ->
             undefined
+    catch
+        %% No table: seki is not running, and nothing is registered.
+        error:badarg -> undefined
     end.
 
 -spec send(term(), term()) -> pid().
