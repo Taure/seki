@@ -98,7 +98,7 @@ handle_rate_limit(Event, Measurements, Metadata, _Config) ->
                 Attrs = #{
                     'seki.component' => rate_limit,
                     'seki.action' => Action,
-                    'seki.name' => Name
+                    'seki.name' => name_attribute(Name)
                 },
                 AllAttrs = maps:merge(Attrs, measurements_to_attrs(Measurements)),
                 otel_span:add_event(SpanCtx, <<"seki.rate_limit">>, AllAttrs)
@@ -124,7 +124,7 @@ handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
                 To = maps:get(to, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => circuit_breaker,
-                    'seki.name' => Name,
+                    'seki.name' => name_attribute(Name),
                     'seki.breaker.from' => From,
                     'seki.breaker.to' => To
                 },
@@ -152,7 +152,7 @@ handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
                 Outcome = maps:get(outcome, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => circuit_breaker,
-                    'seki.name' => Name,
+                    'seki.name' => name_attribute(Name),
                     'seki.breaker.state' => State,
                     'seki.breaker.outcome' => Outcome,
                     'seki.breaker.duration_ms' => maps:get(duration, Measurements, 0)
@@ -180,7 +180,7 @@ handle_retry(Event, Measurements, Metadata, _Config) ->
                 Attrs = #{
                     'seki.component' => retry,
                     'seki.action' => Action,
-                    'seki.name' => Name
+                    'seki.name' => name_attribute(Name)
                 },
                 AllAttrs = maps:merge(Attrs, measurements_to_attrs(Measurements)),
                 otel_span:add_event(SpanCtx, <<"seki.retry">>, AllAttrs)
@@ -206,7 +206,7 @@ handle_bulkhead(Event, Measurements, Metadata, _Config) ->
                 Attrs = #{
                     'seki.component' => bulkhead,
                     'seki.action' => Action,
-                    'seki.name' => Name
+                    'seki.name' => name_attribute(Name)
                 },
                 AllAttrs = maps:merge(Attrs, measurements_to_attrs(Measurements)),
                 otel_span:add_event(SpanCtx, <<"seki.bulkhead">>, AllAttrs)
@@ -228,6 +228,11 @@ handler_id(Event) ->
     list_to_atom(
         lists:flatten(io_lib:format("~p_~s", [?HANDLER_ID_PREFIX, event_to_string(Event)]))
     ).
+
+%% A span attribute is an atom, a binary or a number: a name that is some
+%% other term is recorded as it prints.
+name_attribute(Name) when is_atom(Name); is_binary(Name); is_number(Name) -> Name;
+name_attribute(Name) -> iolist_to_binary(io_lib:format("~0tp", [Name])).
 
 event_to_string(Event) ->
     string:join([atom_to_list(A) || A <- Event], "_").

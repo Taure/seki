@@ -57,7 +57,7 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 -export_type([priority/0, opts/0]).
 
 -record(state, {
-    name :: atom(),
+    name :: seki:name(),
     %% CoDel state
     target :: pos_integer(),
     interval :: pos_integer(),
@@ -85,27 +85,27 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
 
 -doc "Admit a request with default priority (P2 = normal).".
--spec admit(atom()) -> ok | {error, shed}.
+-spec admit(seki:name()) -> ok | {error, shed}.
 admit(Name) ->
     admit(Name, 2).
 
 -doc "Admit a request with the given priority (0 = critical, 3 = low).".
--spec admit(atom(), priority()) -> ok | {error, shed}.
+-spec admit(seki:name(), priority()) -> ok | {error, shed}.
 admit(Name, Priority) ->
-    gen_server:call(Name, {admit, Priority}).
+    gen_server:call(seki_registry:server(Name), {admit, Priority}).
 
 -doc "Signal request completion with duration in ms. Updates CoDel state.".
--spec complete(atom(), non_neg_integer()) -> ok.
+-spec complete(seki:name(), non_neg_integer()) -> ok.
 complete(Name, DurationMs) ->
-    gen_server:cast(Name, {complete, DurationMs}).
+    gen_server:cast(seki_registry:server(Name), {complete, DurationMs}).
 
 -doc "Get current load shedder status (in_flight, utilization, dropping, stats).".
--spec status(atom()) -> map().
+-spec status(seki:name()) -> map().
 status(Name) ->
-    gen_server:call(Name, status).
+    gen_server:call(seki_registry:server(Name), status).
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks

@@ -16,6 +16,19 @@ and a combined `execute/3` that checks rate limits before calling through a brea
 
     :seki.new_limiter(:my_api, %{algorithm: :sliding_window, limit: 100, window: 60_000})
     :seki.check(:my_api, user_id)
+
+## Names
+
+A limiter, breaker, bulkhead, load shedder, adaptive limiter or health checker
+is named by any term (`t:name/0`). An atom is the usual name. Use another term
+when there is one per tenant, worker or host, so that no atom is created for
+each:
+
+    seki:new_breaker({payments, TenantId}, #{}).
+    seki:call({payments, TenantId}, fun() -> charge(TenantId) end).
+
+A process named by an atom is registered under it, as `whereis/1` shows. One
+named by any other term is found through seki only.
 """.
 
 %% Rate limiter API
@@ -60,8 +73,13 @@ and a combined `execute/3` that checks rate limits before calling through a brea
 %% Types
 %%----------------------------------------------------------------------
 
--type limiter_name() :: atom().
--type breaker_name() :: atom().
+-doc """
+The name of a limiter, breaker, bulkhead, load shedder, adaptive limiter or
+health checker: any term.
+""".
+-type name() :: term().
+-type limiter_name() :: name().
+-type breaker_name() :: name().
 -type key() :: term().
 
 -type algorithm() :: token_bucket | sliding_window | gcra | leaky_bucket.
@@ -97,6 +115,7 @@ and a combined `execute/3` that checks rate limits before calling through a brea
     | {error, term()}.
 
 -export_type([
+    name/0,
     limiter_name/0,
     breaker_name/0,
     key/0,
@@ -200,42 +219,42 @@ delete_breaker(Name) ->
 %%----------------------------------------------------------------------
 
 -doc "Start a supervised bulkhead.".
--spec new_bulkhead(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_bulkhead(name(), map()) -> {ok, pid()} | {error, term()}.
 new_bulkhead(Name, Opts) ->
     seki_process_sup:start_child(seki_bulkhead, Name, Opts).
 
 -doc "Stop and remove a supervised bulkhead.".
--spec delete_bulkhead(atom()) -> ok | {error, term()}.
+-spec delete_bulkhead(name()) -> ok | {error, term()}.
 delete_bulkhead(Name) ->
     seki_process_sup:stop_child(Name).
 
 -doc "Start a supervised adaptive concurrency limiter.".
--spec new_adaptive(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_adaptive(name(), map()) -> {ok, pid()} | {error, term()}.
 new_adaptive(Name, Opts) ->
     seki_process_sup:start_child(seki_adaptive, Name, Opts).
 
 -doc "Stop and remove a supervised adaptive concurrency limiter.".
--spec delete_adaptive(atom()) -> ok | {error, term()}.
+-spec delete_adaptive(name()) -> ok | {error, term()}.
 delete_adaptive(Name) ->
     seki_process_sup:stop_child(Name).
 
 -doc "Start a supervised load shedder.".
--spec new_shed(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_shed(name(), map()) -> {ok, pid()} | {error, term()}.
 new_shed(Name, Opts) ->
     seki_process_sup:start_child(seki_shed, Name, Opts).
 
 -doc "Stop and remove a supervised load shedder.".
--spec delete_shed(atom()) -> ok | {error, term()}.
+-spec delete_shed(name()) -> ok | {error, term()}.
 delete_shed(Name) ->
     seki_process_sup:stop_child(Name).
 
 -doc "Start a supervised health checker.".
--spec new_health(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_health(name(), map()) -> {ok, pid()} | {error, term()}.
 new_health(Name, Opts) ->
     seki_process_sup:start_child(seki_health, Name, Opts).
 
 -doc "Stop and remove a supervised health checker.".
--spec delete_health(atom()) -> ok | {error, term()}.
+-spec delete_health(name()) -> ok | {error, term()}.
 delete_health(Name) ->
     seki_process_sup:stop_child(Name).
 

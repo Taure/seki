@@ -14,7 +14,7 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_breaker(atom(), seki:breaker_opts()) -> {ok, pid()} | {error, term()}.
+-spec start_breaker(seki:name(), seki:breaker_opts()) -> {ok, pid()} | {error, term()}.
 start_breaker(Name, Opts) ->
     ChildSpec = #{
         id => Name,
@@ -24,7 +24,7 @@ start_breaker(Name, Opts) ->
     },
     supervisor:start_child(?MODULE, ChildSpec).
 
--spec stop_breaker(atom()) -> ok | {error, term()}.
+-spec stop_breaker(seki:name()) -> ok | {error, term()}.
 stop_breaker(Name) ->
     case supervisor:terminate_child(?MODULE, Name) of
         ok ->

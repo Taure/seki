@@ -164,8 +164,9 @@ Each node maintains local state and periodically gossips with peers via Erlang's
 This is eventually consistent — under normal conditions, rate limits converge within
 one gossip interval. During partitions, each node enforces its local view independently.
 
-Each limiter gossips in its own `pg` group, `{seki_limiters, TableName}` by default.
-If you set `group` yourself, use a different group per limiter: limiters that share
+Each limiter gossips in its own `pg` group by default: `{seki_limiters, TableName}`
+for a limiter named by an atom, `{seki_limiters, Name}` for one named by any other
+term. If you set `group` yourself, use a different group per limiter: limiters that share
 a group merge each other's keys. Timestamps travel relative to the sender's clock,
 so nodes with different uptimes merge token bucket, leaky bucket and GCRA state
 correctly. Each node aligns sliding windows to its own clock, so windows that

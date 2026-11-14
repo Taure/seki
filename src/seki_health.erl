@@ -60,7 +60,7 @@ Compatible with Kubernetes liveness/readiness/startup probes via
 }).
 
 -record(state, {
-    name :: atom(),
+    name :: seki:name(),
     checks :: #{atom() => #check{}},
     check_interval :: pos_integer(),
     vm_checks :: boolean()
@@ -76,45 +76,45 @@ start_link(Name) ->
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
 
 -doc "Register a health check function. Optionally mark as critical.".
--spec register_check(atom(), atom(), check_fun()) -> ok.
+-spec register_check(seki:name(), atom(), check_fun()) -> ok.
 register_check(Name, CheckName, Fun) ->
     register_check(Name, CheckName, Fun, #{}).
 
 -doc "Register a health check with options. Set `#{critical => true}` to make failures return unhealthy.".
--spec register_check(atom(), atom(), check_fun(), map()) -> ok.
+-spec register_check(seki:name(), atom(), check_fun(), map()) -> ok.
 register_check(Name, CheckName, Fun, Opts) ->
     Critical = maps:get(critical, Opts, false),
-    gen_server:call(Name, {register, CheckName, Fun, Critical}).
+    gen_server:call(seki_registry:server(Name), {register, CheckName, Fun, Critical}).
 
 -doc "Remove a previously registered health check.".
--spec unregister_check(atom(), atom()) -> ok.
+-spec unregister_check(seki:name(), atom()) -> ok.
 unregister_check(Name, CheckName) ->
-    gen_server:call(Name, {unregister, CheckName}).
+    gen_server:call(seki_registry:server(Name), {unregister, CheckName}).
 
 -doc "Run all health checks and return aggregated health status.".
--spec check(atom()) -> #{health := health(), checks := map()}.
+-spec check(seki:name()) -> #{health := health(), checks := map()}.
 check(Name) ->
-    gen_server:call(Name, check).
+    gen_server:call(seki_registry:server(Name), check).
 
 -doc "Run a single named health check.".
--spec check_one(atom(), atom()) -> check_result() | {error, not_found}.
+-spec check_one(seki:name(), atom()) -> check_result() | {error, not_found}.
 check_one(Name, CheckName) ->
-    gen_server:call(Name, {check_one, CheckName}).
+    gen_server:call(seki_registry:server(Name), {check_one, CheckName}).
 
 -doc "Kubernetes liveness probe — checks if the process is alive and responsive.".
--spec liveness(atom()) -> ok | {error, unhealthy}.
+-spec liveness(seki:name()) -> ok | {error, unhealthy}.
 liveness(Name) ->
     try
-        gen_server:call(Name, liveness, 5000)
+        gen_server:call(seki_registry:server(Name), liveness, 5000)
     catch
         _:_ -> {error, unhealthy}
     end.
 
 -doc "Kubernetes readiness probe — returns `ok` unless health is `unhealthy`.".
--spec readiness(atom()) -> ok | {error, term()}.
+-spec readiness(seki:name()) -> ok | {error, term()}.
 readiness(Name) ->
     case check(Name) of
         #{health := unhealthy} -> {error, unhealthy};
@@ -122,7 +122,7 @@ readiness(Name) ->
     end.
 
 -doc "Alias for `check/1`.".
--spec status(atom()) -> map().
+-spec status(seki:name()) -> map().
 status(Name) ->
     check(Name).
 

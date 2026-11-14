@@ -34,7 +34,7 @@ or `acquire/1` + `release/1` for manual control.
 ]).
 
 -record(state, {
-    name :: atom(),
+    name :: seki:name(),
     max_concurrent :: pos_integer(),
     counter :: atomics:atomics_ref(),
     monitors :: #{reference() => pid()}
@@ -45,32 +45,33 @@ or `acquire/1` + `release/1` for manual control.
 %%----------------------------------------------------------------------
 
 -doc false.
--spec start_link(atom(), map()) -> {ok, pid()}.
+-spec start_link(seki:name(), map()) -> {ok, pid()}.
 start_link(Name, Opts) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
 
 -doc "Acquire a concurrency slot (non-blocking, returns immediately).".
--spec acquire(atom()) -> ok | {error, bulkhead_full}.
+-spec acquire(seki:name()) -> ok | {error, bulkhead_full}.
 acquire(Name) ->
     acquire(Name, 0).
 
 -doc "Acquire a concurrency slot with a timeout.".
--spec acquire(atom(), non_neg_integer()) -> ok | {error, bulkhead_full}.
+-spec acquire(seki:name(), non_neg_integer()) -> ok | {error, bulkhead_full}.
 acquire(Name, Timeout) ->
-    gen_server:call(Name, {acquire, self()}, max(5000, Timeout + 1000)).
+    gen_server:call(seki_registry:server(Name), {acquire, self()}, max(5000, Timeout + 1000)).
 
 -doc "Release a previously acquired concurrency slot.".
--spec release(atom()) -> ok.
+-spec release(seki:name()) -> ok.
 release(Name) ->
-    gen_server:cast(Name, {release, self()}).
+    gen_server:cast(seki_registry:server(Name), {release, self()}).
 
 -doc "Execute a function with automatic acquire/release.".
--spec call(atom(), fun(() -> term())) -> {ok, term()} | {error, bulkhead_full}.
+-spec call(seki:name(), fun(() -> term())) -> {ok, term()} | {error, bulkhead_full}.
 call(Name, Fun) ->
     call(Name, Fun, 5000).
 
 -doc "Execute a function with automatic acquire/release and a timeout.".
--spec call(atom(), fun(() -> term()), non_neg_integer()) -> {ok, term()} | {error, bulkhead_full}.
+-spec call(seki:name(), fun(() -> term()), non_neg_integer()) ->
+    {ok, term()} | {error, bulkhead_full}.
 call(Name, Fun, Timeout) ->
     case acquire(Name, Timeout) of
         ok ->
@@ -85,10 +86,10 @@ call(Name, Fun, Timeout) ->
     end.
 
 -doc "Get current bulkhead status (current, max, available slots).".
--spec status(atom()) ->
+-spec status(seki:name()) ->
     #{current := non_neg_integer(), max := pos_integer(), available := non_neg_integer()}.
 status(Name) ->
-    gen_server:call(Name, status).
+    gen_server:call(seki_registry:server(Name), status).
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks

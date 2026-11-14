@@ -14,7 +14,7 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_child(module(), atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec start_child(module(), seki:name(), map()) -> {ok, pid()} | {error, term()}.
 start_child(Module, Name, Opts) ->
     ChildSpec = #{
         id => Name,
@@ -39,7 +39,7 @@ start_child(Module, Name, Opts) ->
             Err
     end.
 
--spec stop_child(atom()) -> ok | {error, term()}.
+-spec stop_child(seki:name()) -> ok | {error, term()}.
 stop_child(Name) ->
     case supervisor:terminate_child(?MODULE, Name) of
         ok ->

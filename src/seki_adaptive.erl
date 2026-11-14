@@ -55,7 +55,7 @@ Two algorithms:
 -export_type([algorithm/0, outcome/0, opts/0]).
 
 -record(state, {
-    name :: atom(),
+    name :: seki:name(),
     algorithm :: algorithm(),
     min_limit :: pos_integer(),
     max_limit :: pos_integer(),
@@ -79,25 +79,25 @@ Two algorithms:
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
 
 -doc "Acquire a concurrency slot. Returns `{error, limit_reached}` if at capacity.".
--spec acquire(atom()) -> ok | {error, limit_reached}.
+-spec acquire(seki:name()) -> ok | {error, limit_reached}.
 acquire(Name) ->
-    gen_server:call(Name, {acquire, self()}).
+    gen_server:call(seki_registry:server(Name), {acquire, self()}).
 
 -doc "Release a slot and report the outcome. The outcome adjusts the concurrency limit.".
--spec release(atom(), outcome()) -> ok.
+-spec release(seki:name(), outcome()) -> ok.
 release(Name, Outcome) ->
-    gen_server:cast(Name, {release, self(), Outcome}).
+    gen_server:cast(seki_registry:server(Name), {release, self(), Outcome}).
 
 -doc "Execute a function with automatic acquire/release and outcome reporting.".
--spec call(atom(), fun(() -> term())) -> {ok, term()} | {error, limit_reached}.
+-spec call(seki:name(), fun(() -> term())) -> {ok, term()} | {error, limit_reached}.
 call(Name, Fun) ->
     call(Name, Fun, #{}).
 
 -doc "Execute a function with automatic acquire/release, outcome reporting, and options.".
--spec call(atom(), fun(() -> term()), map()) -> {ok, term()} | {error, limit_reached}.
+-spec call(seki:name(), fun(() -> term()), map()) -> {ok, term()} | {error, limit_reached}.
 call(Name, Fun, _Opts) ->
     case acquire(Name) of
         ok ->
@@ -115,14 +115,14 @@ call(Name, Fun, _Opts) ->
     end.
 
 -doc "Get current adaptive limiter status (current_limit, in_flight, available).".
--spec status(atom()) ->
+-spec status(seki:name()) ->
     #{
         current_limit := pos_integer(),
         in_flight := non_neg_integer(),
         available := non_neg_integer()
     }.
 status(Name) ->
-    gen_server:call(Name, status).
+    gen_server:call(seki_registry:server(Name), status).
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks

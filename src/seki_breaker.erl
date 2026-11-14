@@ -31,7 +31,7 @@ Typically used via `seki:call/2` rather than directly.
 ]).
 
 -record(data, {
-    name :: atom(),
+    name :: seki:name(),
     %% Sliding window for failure tracking
     window_type :: count | time,
     window_size :: pos_integer(),
@@ -53,22 +53,22 @@ Typically used via `seki:call/2` rather than directly.
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_statem:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    gen_statem:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
 
 -doc "Execute a function through this breaker. Returns `{error, circuit_open}` when open.".
--spec call(atom(), fun(() -> term()), map()) -> seki:call_result().
+-spec call(seki:name(), fun(() -> term()), map()) -> seki:call_result().
 call(Name, Fun, _CallOpts) ->
-    gen_statem:call(Name, {call, Fun}).
+    gen_statem:call(seki_registry:server(Name), {call, Fun}).
 
 -doc "Get the current breaker state.".
--spec get_state(atom()) -> closed | open | half_open.
+-spec get_state(seki:name()) -> closed | open | half_open.
 get_state(Name) ->
-    gen_statem:call(Name, get_state).
+    gen_statem:call(seki_registry:server(Name), get_state).
 
 -doc "Reset the breaker to closed state.".
--spec reset(atom()) -> ok.
+-spec reset(seki:name()) -> ok.
 reset(Name) ->
-    gen_statem:cast(Name, reset).
+    gen_statem:cast(seki_registry:server(Name), reset).
 
 %%----------------------------------------------------------------------
 %% gen_statem callbacks

@@ -26,15 +26,15 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
--spec register(atom(), seki:limiter_opts()) -> ok | {error, term()}.
+-spec register(seki:name(), seki:limiter_opts()) -> ok | {error, term()}.
 register(Name, Opts) ->
     gen_server:call(?MODULE, {register, Name, Opts}).
 
--spec unregister(atom()) -> ok.
+-spec unregister(seki:name()) -> ok.
 unregister(Name) ->
     gen_server:call(?MODULE, {unregister, Name}).
 
--spec lookup(atom()) -> {seki:algorithm(), module(), term(), map()}.
+-spec lookup(seki:name()) -> {seki:algorithm(), module(), term(), map()}.
 lookup(Name) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
         [{Name, Algorithm, Backend, BackendState, Config}] ->
@@ -111,9 +111,7 @@ terminate(_Reason, _State) ->
 
 start_limiter(Name, Backend, Opts, State) ->
     Algorithm = maps:get(algorithm, Opts),
-    BackendOpts = maps:merge(
-        #{table_name => limiter_table(Name)}, maps:get(backend_opts, Opts, #{})
-    ),
+    BackendOpts = maps:merge(backend_defaults(Name), maps:get(backend_opts, Opts, #{})),
     Limiter = #{algorithm => Algorithm, window => maps:get(window, Opts)},
     {ok, BackendState} = Backend:init(BackendOpts#{seki_limiter => Limiter}),
     Config = (build_config(Algorithm, Opts))#{atomic => is_atomic(Backend)},
@@ -124,8 +122,13 @@ is_atomic(Backend) ->
     _ = code:ensure_loaded(Backend),
     erlang:function_exported(Backend, atomic_update, 3).
 
-limiter_table(Name) ->
-    list_to_atom("seki_limiter_" ++ atom_to_list(Name)).
+%% A table name is an atom, and making one from a term that is not would
+%% create an atom per limiter. Such a limiter gets one shared label for its
+%% (unnamed) table and is told apart by its `pg` group instead.
+backend_defaults(Name) when is_atom(Name) ->
+    #{table_name => list_to_atom("seki_limiter_" ++ atom_to_list(Name))};
+backend_defaults(Name) ->
+    #{table_name => seki_limiter, group => {seki_limiters, Name}}.
 
 build_config(token_bucket, Opts) ->
     #{

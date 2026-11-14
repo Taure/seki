@@ -144,6 +144,20 @@ handle_request(UserId, Fun) ->
     end.
 ```
 
+## Names
+
+Everything seki starts is named by the term you give it. An atom is the usual
+name; any other term works the same and creates no atom, which matters when
+there is a breaker or a limiter per tenant, worker or host:
+
+```erlang
+{ok, _} = seki:new_breaker({payments, TenantId}, #{failure_threshold => 50}),
+seki:call({payments, TenantId}, fun() -> charge(TenantId) end).
+```
+
+A process named by an atom is registered under that atom. One named by another
+term is reached through seki's functions only.
+
 ## Telemetry
 
 Every seki operation emits telemetry events under the `[seki, ...]` prefix.
