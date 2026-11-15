@@ -28,6 +28,7 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 
 -export([
     start_link/2,
+    check_options/1,
     admit/2,
     admit/1,
     complete/2,
@@ -87,7 +88,22 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, [
+        {target, pos_integer},
+        {interval, pos_integer},
+        {max_in_flight, pos_integer},
+        {p1_threshold, percent},
+        {p2_threshold, percent},
+        {p3_threshold, percent}
+    ]).
 
 -doc "Admit a request with default priority (P2 = normal).".
 -spec admit(seki:name()) -> ok | {error, shed}.

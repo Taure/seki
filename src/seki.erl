@@ -36,6 +36,14 @@ process `Name` on `Node`: to use a breaker on another node, call that node.
 A pid is not a name: `new_breaker/2` and the other `new_*` functions return
 `{error, {invalid_name, Pid}}` for one. The pid they return is accepted in
 place of the name by every function that calls the process.
+
+## Options
+
+`new_breaker/2` and the other `new_*` functions check their options before
+they start anything. An option of the wrong kind, such as
+`window_size => 0`, returns `{error, {invalid_option, window_size}}`, and
+options that are not a map return `{error, invalid_options}`. A key that seki
+does not know is ignored.
 """.
 
 %% Rate limiter API

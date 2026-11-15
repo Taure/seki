@@ -12,6 +12,7 @@ cleanup(_) ->
 
 bulkhead_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"allows calls within limit", fun allows_within_limit/0},
         {"rejects when full", fun rejects_when_full/0},
@@ -82,3 +83,26 @@ call_wraps() ->
 unexpected_messages_are_dropped() ->
     {ok, Pid} = seki_bulkhead:start_link(bh_stray, #{}),
     ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_bulkhead, {error, unknown})).
+
+invalid_options_are_refused() ->
+    Supervisor = whereis(seki_process_sup),
+    [
+        begin
+            ?assertEqual(
+                {error, {invalid_option, max_concurrent}}, seki:new_bulkhead(bh_invalid, Opts)
+            ),
+            ?assertEqual(
+                {error, {invalid_option, max_concurrent}},
+                seki_bulkhead:start_link(bh_invalid, Opts)
+            )
+        end
+     || Opts <:- [
+            #{max_concurrent => infinity}, #{max_concurrent => 0}, #{max_concurrent => 2.5}
+        ]
+    ],
+    ?assertEqual({error, invalid_options}, seki_bulkhead:check_options([])),
+    ?assertEqual(undefined, whereis(bh_invalid)),
+    ?assertEqual(Supervisor, whereis(seki_process_sup)),
+    {ok, _} = seki:new_bulkhead(bh_invalid, #{max_concurrent => 1, some_other_key => kept}),
+    ?assertMatch(#{max := 1}, seki_bulkhead:status(bh_invalid)),
+    seki:delete_bulkhead(bh_invalid).

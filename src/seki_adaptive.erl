@@ -23,6 +23,7 @@ Two algorithms:
 
 -export([
     start_link/2,
+    check_options/1,
     acquire/1,
     release/2,
     call/2,
@@ -82,7 +83,24 @@ Two algorithms:
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, [
+        {algorithm, {one_of, [aimd, gradient]}},
+        {min_limit, pos_integer},
+        {max_limit, pos_integer},
+        {initial_limit, pos_integer},
+        {backoff_ratio, positive},
+        {smoothing, positive},
+        {tolerance, positive},
+        {long_smoothing, positive}
+    ]).
 
 -doc "Acquire a concurrency slot. Returns `{error, limit_reached}` if at capacity.".
 -spec acquire(seki:name()) -> ok | {error, limit_reached}.

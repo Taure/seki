@@ -19,6 +19,12 @@ start_link() ->
 start_breaker(Pid, _Opts) when is_pid(Pid) ->
     {error, {invalid_name, Pid}};
 start_breaker(Name, Opts) ->
+    case seki_breaker:check_options(Opts) of
+        ok -> start_child(Name, Opts);
+        {error, Reason} -> {error, Reason}
+    end.
+
+start_child(Name, Opts) ->
     ChildSpec = #{
         id => Name,
         start => {seki_breaker, start_link, [Name, Opts]},

@@ -277,6 +277,12 @@ The ETS table of a limiter named by an atom is no longer labelled
 tables were never named tables, so only `ets:info(Tab, name)` and tools such
 as Observer show the difference.
 
+`seki:new_breaker/2`, `seki:new_bulkhead/2`, `seki:new_adaptive/2`,
+`seki:new_shed/2` and `seki:new_health/2` check their options. An option of
+the wrong kind, for example `max_concurrent => infinity` or
+`failure_threshold => 150`, returns `{error, {invalid_option, Key}}` where it
+used to start a process that died, or never tripped, when it was first used.
+
 The log lines that carry a name are now structured reports, for example
 `#{msg => bulkhead_full, name => db_pool, max_concurrent => 25}`, where they
 were formatted strings.

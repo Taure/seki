@@ -29,6 +29,7 @@ Compatible with Kubernetes liveness/readiness/startup probes via
 -export([
     start_link/1,
     start_link/2,
+    check_options/1,
     register_check/3,
     register_check/4,
     unregister_check/2,
@@ -82,7 +83,15 @@ start_link(Name) ->
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, [{vm_checks, boolean}, {check_interval, pos_integer}]).
 
 -doc "Register a health check function. Optionally mark as critical.".
 -spec register_check(seki:name(), atom(), check_fun()) -> ok.

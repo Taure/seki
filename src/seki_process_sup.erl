@@ -21,6 +21,12 @@ start_link() ->
 start_child(_Module, Pid, _Opts) when is_pid(Pid) ->
     {error, {invalid_name, Pid}};
 start_child(Module, Name, Opts) ->
+    case Module:check_options(Opts) of
+        ok -> start_checked(Module, Name, Opts);
+        {error, Reason} -> {error, Reason}
+    end.
+
+start_checked(Module, Name, Opts) ->
     ChildSpec = #{
         id => Name,
         start => {Module, start_link, [Name, Opts]},

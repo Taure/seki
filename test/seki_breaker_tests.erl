@@ -21,6 +21,8 @@ cleanup(_) ->
 basic_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"starts in closed state", fun starts_closed/0},
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
+        {"options at their limits are accepted", fun options_at_their_limits/0},
         {"unexpected messages are dropped in every state", fun unexpected_messages_are_dropped/0},
         {"passes through successful calls", fun successful_calls/0},
         {"returns wrapped result", fun returns_wrapped_result/0},
@@ -595,3 +597,60 @@ unexpected_messages_are_dropped() ->
     ?assertEqual(closed, seki:state(br_stray)),
     ?assertEqual(Breaker, whereis(br_stray)),
     seki:delete_breaker(br_stray).
+
+invalid_options_are_refused() ->
+    Supervisor = whereis(seki_breaker_sup),
+    [
+        begin
+            ?assertEqual(
+                {error, {invalid_option, Key}}, seki:new_breaker(br_invalid, option(Key, Value))
+            ),
+            ?assertEqual(
+                {error, {invalid_option, Key}},
+                seki_breaker:start_link(br_invalid, option(Key, Value))
+            )
+        end
+     || {Key, Value} <:- [
+            {window_type, bogus},
+            {window_size, 0},
+            {window_size, many},
+            {failure_threshold, 0},
+            {failure_threshold, 101},
+            {failure_threshold, half},
+            {slow_call_threshold, 0},
+            {slow_call_threshold, 150},
+            {slow_call_duration, 0},
+            {slow_call_duration, slow},
+            {wait_duration, 0},
+            {wait_duration, -1},
+            {wait_duration, infinity},
+            {half_open_requests, 0},
+            {error_classifier, not_a_fun},
+            {error_classifier, fun() -> true end}
+        ]
+    ],
+    ?assertEqual({error, invalid_options}, seki_breaker:check_options([])),
+    ?assertEqual(undefined, whereis(br_invalid)),
+    ?assertEqual(Supervisor, whereis(seki_breaker_sup)),
+    ?assertEqual(
+        false, lists:keymember(br_invalid, 1, supervisor:which_children(seki_breaker_sup))
+    ).
+
+options_at_their_limits() ->
+    Limits = #{
+        window_type => time,
+        window_size => 1,
+        failure_threshold => 100,
+        slow_call_threshold => 1,
+        slow_call_duration => 1,
+        wait_duration => 1,
+        half_open_requests => 1,
+        error_classifier => fun(_) -> false end
+    },
+    {ok, _} = seki:new_breaker(br_limits, maps:merge(Limits, option(some_other_key, kept))),
+    ?assertEqual({ok, ok}, seki:call(br_limits, fun() -> ok end)),
+    seki:delete_breaker(br_limits).
+
+-spec option(atom(), term()) -> map().
+option(Key, Value) ->
+    #{Key => Value}.

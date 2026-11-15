@@ -17,6 +17,7 @@ Typically used via `seki:call/2` rather than directly.
 %% API
 -export([
     start_link/2,
+    check_options/1,
     call/3,
     get_state/1,
     reset/1
@@ -33,6 +34,16 @@ Typically used via `seki:call/2` rather than directly.
 ]).
 
 -define(MINIMUM_SAMPLE, 5).
+-define(OPTIONS, [
+    {window_type, {one_of, [count, time]}},
+    {window_size, pos_integer},
+    {failure_threshold, percent},
+    {slow_call_threshold, percent},
+    {slow_call_duration, pos_integer},
+    {wait_duration, pos_integer},
+    {half_open_requests, pos_integer},
+    {error_classifier, {function, 1}}
+]).
 
 -record(data, {
     name :: seki:name(),
@@ -57,7 +68,15 @@ Typically used via `seki:call/2` rather than directly.
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_statem:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_statem:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, ?OPTIONS).
 
 -doc "Execute a function through this breaker. Returns `{error, circuit_open}` when open.".
 -spec call(seki:name(), fun(() -> term()), map()) -> seki:call_result().

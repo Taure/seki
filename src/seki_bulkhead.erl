@@ -19,6 +19,7 @@ or `acquire/1` + `release/1` for manual control.
 
 -export([
     start_link/2,
+    check_options/1,
     acquire/1,
     acquire/2,
     release/1,
@@ -47,9 +48,17 @@ or `acquire/1` + `release/1` for manual control.
 %%----------------------------------------------------------------------
 
 -doc false.
--spec start_link(seki:name(), map()) -> gen_server:start_ret().
+-spec start_link(seki:name(), map()) -> gen_server:start_ret() | {error, seki_options:invalid()}.
 start_link(Name, Opts) ->
-    gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, [{max_concurrent, pos_integer}]).
 
 -doc "Acquire a concurrency slot (non-blocking, returns immediately).".
 -spec acquire(seki:name()) -> ok | {error, bulkhead_full}.
