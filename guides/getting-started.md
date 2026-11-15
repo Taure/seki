@@ -10,7 +10,7 @@ bulkheads, retry, and more. It works natively from Erlang, Elixir, Gleam, and LF
 ```erlang
 %% rebar.config
 {deps, [
-    {seki, "~> 0.1"}
+    {seki, "~> 0.6"}
 ]}.
 ```
 
@@ -20,7 +20,7 @@ bulkheads, retry, and more. It works natively from Erlang, Elixir, Gleam, and LF
 # mix.exs
 defp deps do
   [
-    {:seki, "~> 0.1"}
+    {:seki, "~> 0.6"}
   ]
 end
 ```
@@ -174,10 +174,15 @@ tenants that exist), or delete what is no longer used
 (`seki:delete_breaker/1`, `seki:delete_limiter/1`). A limiter needs no name
 per client: one limiter counts per key (`seki:check/2`).
 
-The processes share two supervisors, one for breakers and one for the rest.
-Starting and deleting go through them one at a time. Each tolerates 10 crashes
-in 60 seconds across all its children; past that it restarts empty, and what it
-held must be created again.
+Each of these processes has a supervisor of its own, which restarts it when it
+crashes: up to 3 times in 10 seconds. On the fourth crash in 10 seconds the
+supervisor gives up and the name is gone, as if it had never been created,
+until you create it again. No other name is affected. See
+[Architecture](architecture.md) for the supervision tree and for what each
+kind of process keeps across a restart.
+
+Starting and deleting go through two shared supervisors, one for breakers and
+one for the rest, one name at a time.
 
 A name is written to seki's log lines and telemetry events. Do not put a
 secret, such as an API key, in one.
@@ -198,6 +203,11 @@ stopped, raises, and the function you passed is not run:
 | `seki_health:liveness/1` | returns `{error, unhealthy}` | returns `{error, unhealthy}` |
 | `seki:check/2,3`, `inspect/2,3`, `reset/2`, `execute/3` | raises `error:{limiter_not_found, Name}` | raises `error:badarg` |
 | `seki:reset_breaker/1`, `seki_bulkhead:release/1`, `seki_shed:complete/2`, `seki_adaptive:release/2` | returns `ok`, does nothing | returns `ok`, does nothing |
+
+A name whose process crashed more than 3 times in 10 seconds is an unknown
+name from then on, and every row above holds for it. A breaker that was open
+when that happened is open when it is created again
+(see [When a Name Gives Up](architecture.md#when-a-name-gives-up)).
 
 The names that are not atoms are kept in one table. If seki's registry and the
 keeper of its table are both lost, the table is made again from the processes
@@ -302,8 +312,40 @@ The log lines that carry a name are now structured reports, for example
 `#{msg => bulkhead_full, name => db_pool, max_concurrent => 25}`, where they
 were formatted strings.
 
+Every breaker, bulkhead, adaptive limiter, load shedder and health checker
+now has a supervisor of its own, which tolerates 3 restarts in 10 seconds. Up
+to 0.5 they shared two supervisors that tolerated 10 crashes in 60 seconds
+between all their processes, and past that every breaker (or every other
+process) on the node was lost. From 0.6 a process that crashes four times in
+10 seconds is removed on its own: calls to its name exit with `{noproc, _}`,
+as for a name that was never created, until it is created again, and nothing
+else is touched. What you see from outside:
+
+- `seki:new_breaker/2` and the other `new_*` functions still return the pid of
+  the process itself, and the same errors as before.
+- `supervisor:which_children(seki_breaker_sup)` and
+  `supervisor:which_children(seki_process_sup)` list one
+  `{Name, Pid, supervisor, [seki_name_sup]}` for each name, where they listed
+  the process as a worker. Both supervisors are internal to seki.
+- A crash loop is logged by the supervisor of the name
+  (`{Pid, seki_name_sup}`), ending in one `reached_max_restart_intensity`
+  report.
+- While seki is stopped, `seki:new_breaker/2` and the other `new_*` functions
+  exit with `{noproc, _}` as before; the call quoted in the exit reason is a
+  different one.
+
+The gossip process of a limiter on `seki_backend_pg` is no longer linked to
+the process that holds the limiters. Up to 0.5 a gossip process that died took
+every limiter on the node with it. From 0.6 it is restarted and no limiter is
+lost. `seki_backend_pg` starts its `pg` scope under seki's supervisor, so the
+scope stops when seki stops; a scope that is already running is used as it
+is. A `scope` that is the registered name of something else returns
+`{error, {backend_failed, {invalid_option, scope}}}` from
+`seki:new_limiter/2`. See [Architecture](architecture.md) for the whole tree.
+
 ## Next Steps
 
+- [Architecture](architecture.md): the supervision tree, and what is kept when a process is lost
 - [Rate Limiting Guide](rate-limiting.md) — choosing algorithms, distributed rate limiting
 - [Circuit Breaker Guide](circuit-breaker.md) — thresholds, error classifiers, window types
 - [Nova Integration](nova-integration.md) — plugins, controllers, application setup

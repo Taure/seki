@@ -23,7 +23,7 @@ It covers what [fuse](https://github.com/jlouis/fuse) (circuit breaking) and [Ha
 ```erlang
 %% rebar.config
 {deps, [
-    {seki, "~> 0.4"}
+    {seki, "~> 0.6"}
 ]}.
 ```
 
@@ -33,7 +33,7 @@ It covers what [fuse](https://github.com/jlouis/fuse) (circuit breaking) and [Ha
 # mix.exs
 defp deps do
   [
-    {:seki, "~> 0.4"}
+    {:seki, "~> 0.6"}
   ]
 end
 ```
