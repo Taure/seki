@@ -47,7 +47,7 @@ or `acquire/1` + `release/1` for manual control.
 %%----------------------------------------------------------------------
 
 -doc false.
--spec start_link(seki:name(), map()) -> {ok, pid()}.
+-spec start_link(seki:name(), map()) -> gen_server:start_ret().
 start_link(Name, Opts) ->
     gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []).
 
@@ -59,9 +59,11 @@ acquire(Name) ->
 -doc "Acquire a concurrency slot with a timeout.".
 -spec acquire(seki:name(), non_neg_integer()) -> ok | {error, bulkhead_full}.
 acquire(Name, Timeout) ->
-    gen_server:call(
-        seki_registry:server(Name), {acquire, self()}, seki_number:larger(5000, Timeout + 1000)
-    ).
+    CallTimeout = seki_number:larger(5000, Timeout + 1000),
+    case gen_server:call(seki_registry:server(Name), {acquire, self()}, CallTimeout) of
+        ok -> ok;
+        {error, bulkhead_full} -> {error, bulkhead_full}
+    end.
 
 -doc "Release a previously acquired concurrency slot.".
 -spec release(seki:name()) -> ok.
@@ -93,7 +95,14 @@ call(Name, Fun, Timeout) ->
 -spec status(seki:name()) ->
     #{current := non_neg_integer(), max := pos_integer(), available := non_neg_integer()}.
 status(Name) ->
-    gen_server:call(seki_registry:server(Name), status).
+    status_reply(gen_server:call(seki_registry:server(Name), status)).
+
+-spec status_reply(term()) ->
+    #{current := non_neg_integer(), max := pos_integer(), available := non_neg_integer()}.
+status_reply(#{current := Current, max := Max, available := Available}) when
+    is_integer(Current), is_integer(Max), is_integer(Available)
+->
+    #{current => Current, max => Max, available => Available}.
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks
@@ -142,8 +151,8 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
-    case maps:take(MonRef, State#state.monitors) of
-        {_, NewMonitors} ->
+    case State#state.monitors of
+        #{MonRef := _Holder} = Monitors ->
             ?LOG_WARNING(
                 #{
                     msg => bulkhead_holder_died,
@@ -156,8 +165,8 @@ handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
             atomics:sub(State#state.counter, 1, 1),
             Current = atomics:get(State#state.counter, 1),
             emit_release(State#state.name, Current, State#state.max_concurrent),
-            {noreply, State#state{monitors = NewMonitors}};
-        error ->
+            {noreply, State#state{monitors = maps:remove(MonRef, Monitors)}};
+        #{} ->
             {noreply, State}
     end;
 handle_info(_Info, State) ->
