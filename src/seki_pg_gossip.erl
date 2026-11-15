@@ -123,10 +123,9 @@ terminate(Reason, #state{scope = Scope, group = Group}) ->
         #{domain => [seki]}
     ),
     try
-        _ = pg:leave(Scope, Group, self()),
-        ok
+        pg:leave(Scope, Group, self())
     catch
-        exit:_NoScope -> ok
+        exit:_NoScope -> not_joined
     end.
 
 %%----------------------------------------------------------------------

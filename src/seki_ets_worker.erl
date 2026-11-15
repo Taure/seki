@@ -38,7 +38,7 @@ child_specs() ->
 
 -spec route(ets:table(), term()) -> {worker, pid()} | local.
 route(Tab, StorageKey) ->
-    case persistent_term:get(?COUNT_KEY, 0) of
+    case persistent_term:get(?COUNT_KEY, undefined) of
         Count when is_integer(Count), Count > 0 ->
             worker(erlang:phash2({Tab, StorageKey}, Count) + 1);
         _ ->
@@ -61,8 +61,9 @@ atomic_update(Tab, StorageKey, Step) ->
 %% The pid of a worker that died stays published until its successor starts.
 %% A call to it exits at once, and the caller then runs the step itself.
 call(Worker, Tab, StorageKey, Step) ->
-    Deadline = erlang:monotonic_time(millisecond) + ?CALL_TIMEOUT,
-    try call_worker(Worker, {atomic_update, Deadline, Tab, StorageKey, Step}) of
+    Timeout = ?CALL_TIMEOUT,
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
+    try call_worker(Worker, {atomic_update, Deadline, Tab, StorageKey, Step}, Timeout) of
         {raise, Class, Reason, Stacktrace} -> erlang:raise(Class, Reason, Stacktrace);
         Reply -> Reply
     catch
@@ -70,10 +71,12 @@ call(Worker, Tab, StorageKey, Step) ->
         exit:_ -> seki_ets:local_update(Tab, StorageKey, Step)
     end.
 
--spec call_worker(pid(), {atomic_update, integer(), ets:table(), term(), seki_ets:step()}) ->
+-spec call_worker(
+    pid(), {atomic_update, integer(), ets:table(), term(), seki_ets:step()}, pos_integer()
+) ->
     dynamic().
-call_worker(Worker, Request) ->
-    gen_server:call(Worker, Request, ?CALL_TIMEOUT).
+call_worker(Worker, Request, Timeout) ->
+    gen_server:call(Worker, Request, Timeout).
 
 init(Index) ->
     ok = persistent_term:put({?MODULE, Index}, self()),
