@@ -176,7 +176,7 @@ an_unknown_name_is_not_found() ->
 %% the registry stays down. What comes back names the process that did not
 %% start, as its supervisor describes it.
 a_start_that_fails_names_the_process() ->
-    Registry = whereis(seki_registry),
+    Registry = running(seki_registry),
     ok = sys:suspend(seki_registry_sup),
     try
         Monitor = monitor(process, Registry),
@@ -218,11 +218,10 @@ creating_at_once_starts_one_process() ->
                 end
              || Creator <:- Creators
             ],
-            [Process] = [Created || {ok, Created} <- Results],
-            ?assertEqual(
-                lists:duplicate(19, {error, {already_started, Process}}),
-                Results -- [{ok, Process}]
+            {[{ok, Process}], Refused} = lists:partition(
+                fun(Result) -> element(1, Result) =:= ok end, Results
             ),
+            ?assertEqual(lists:duplicate(19, {error, {already_started, Process}}), Refused),
             ?assertEqual(Process, registered(Name)),
             ?assertEqual(ok, delete(Kind, Name))
         end
@@ -246,3 +245,9 @@ parent(_Kind) -> seki_process_sup.
 
 registered(Name) when is_atom(Name) -> whereis(Name);
 registered(Name) -> seki_registry:whereis_name(Name).
+
+-spec running(atom()) -> pid().
+running(Name) ->
+    case whereis(Name) of
+        Process when is_pid(Process) -> Process
+    end.
