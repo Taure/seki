@@ -72,7 +72,7 @@ wait_or_hedge(Fun, Parent, Ref, Delay, MaxExtra, Pids, ExtraCount) ->
                 [Err, length(Pids) - 1],
                 #{domain => [seki]}
             ),
-            RemainingPids = lists:delete(FromPid, Pids),
+            RemainingPids = [Pid || Pid <- Pids, Pid =/= FromPid],
             case RemainingPids of
                 [] ->
                     logger:error("Hedge: all attempts failed", #{domain => [seki]}),
@@ -99,13 +99,14 @@ wait_or_hedge(Fun, Parent, Ref, Delay, MaxExtra, Pids, ExtraCount) ->
         end
     end.
 
+-spec wait_for_remaining(reference(), [pid()]) -> {ok, term()} | {error, all_failed}.
 wait_for_remaining(Ref, Pids) ->
     receive
         {hedge_result, Ref, FromPid, {ok, Result}} ->
             kill_others(Pids, FromPid),
             {ok, Result};
         {hedge_result, Ref, FromPid, {error, _}} ->
-            RemainingPids = lists:delete(FromPid, Pids),
+            RemainingPids = [Pid || Pid <- Pids, Pid =/= FromPid],
             case RemainingPids of
                 [] -> {error, all_failed};
                 _ -> wait_for_remaining(Ref, RemainingPids)
@@ -116,20 +117,14 @@ wait_for_remaining(Ref, Pids) ->
             [length(Pids)],
             #{domain => [seki]}
         ),
-        lists:foreach(fun(P) -> exit(P, kill) end, Pids),
+        _ = [exit(Pid, kill) || Pid <- Pids],
         {error, all_failed}
     end.
 
+-spec kill_others([pid()], pid()) -> ok.
 kill_others(Pids, WinnerPid) ->
-    lists:foreach(
-        fun(P) ->
-            case P =:= WinnerPid of
-                true -> ok;
-                false -> exit(P, kill)
-            end
-        end,
-        Pids
-    ).
+    _ = [exit(Pid, kill) || Pid <- Pids, Pid =/= WinnerPid],
+    ok.
 
 emit_telemetry(Name, Result) ->
     Status =
