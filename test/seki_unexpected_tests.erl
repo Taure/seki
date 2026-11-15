@@ -18,9 +18,7 @@ dropped_by(Server, Module, Refusal) ->
 
 -spec dropped_by(pid() | atom(), term()) -> [map()].
 dropped_by(Name, Refusal) when is_atom(Name) ->
-    case whereis(Name) of
-        Server when is_pid(Server) -> dropped_by(Server, Refusal)
-    end;
+    dropped_by(running(whereis(Name)), Refusal);
 dropped_by(Server, Refusal) ->
     Before = sys:get_state(Server),
     ok = logger:add_handler(?HANDLER, ?MODULE, #{level => warning, config => #{pid => self()}}),
@@ -35,6 +33,9 @@ dropped_by(Server, Refusal) ->
     after
         ok = logger:remove_handler(?HANDLER)
     end.
+
+-spec running(term()) -> pid().
+running(Server) when is_pid(Server) -> Server.
 
 log(#{msg := {report, Report}, meta := #{pid := From}}, #{config := #{pid := Pid}}) ->
     Pid ! {logged, From, Report},
