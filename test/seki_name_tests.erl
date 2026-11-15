@@ -15,6 +15,39 @@ a_short_binary_is_its_own_label_test() ->
     ?assertEqual(~"orders", seki_name:label(~"orders")),
     ?assertEqual(binary:copy(~"a", 255), seki_name:label(binary:copy(~"a", 255))).
 
+a_binary_longer_than_an_atom_is_printed_short_test() ->
+    Label = seki_name:label(binary:copy(~"a", 256)),
+    ?assertMatch(<<"<<\"aaaa", _/binary>>, Label),
+    ?assertEqual(~"\"...>>", binary:part(Label, byte_size(Label), -6)),
+    ?assert(byte_size(Label) < 256).
+
+a_name_is_printed_twenty_levels_deep_test() ->
+    ?assertEqual(
+        ~"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19|...]",
+        seki_name:label(lists:seq(1, 30))
+    ),
+    ?assertEqual(
+        ~"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]",
+        seki_name:label(lists:seq(1, 19))
+    ),
+    ?assertEqual(~"{1,{2,{3,{4,{5,{6,{7,{8,{9,{10,...}}}}}}}}}}", seki_name:label(nested(30))),
+    ?assertEqual(~"{1,{2,{3,{4,{5,{6,{7,{8,{9,[]}}}}}}}}}", seki_name:label(nested(9))).
+
+chars_that_are_not_unicode_are_printed_again_test() ->
+    NotUnicode = [${, 16#D800, $}],
+    ?assertEqual(~"{tenant,<<\"å\">>}", seki_name:printed(NotUnicode, {tenant, ~"å"})),
+    ?assertEqual(
+        ~"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19|...]",
+        seki_name:printed(NotUnicode, lists:seq(1, 30))
+    ),
+    ?assertEqual(~"{tenant,<<\"å\"/utf8>>}", seki_name:printed("{tenant,<<\"å\"/utf8>>}", ignored)).
+
+nested(Levels) ->
+    nested(Levels, []).
+
+nested(0, Inner) -> Inner;
+nested(Level, Inner) -> nested(Level - 1, {Level, Inner}).
+
 another_term_is_labelled_as_it_prints_test() ->
     ?assertEqual(~"{payments,<<\"t1\">>}", seki_name:label({payments, ~"t1"})),
     ?assertEqual(~"[shed,1]", seki_name:label([shed, 1])),

@@ -4,6 +4,34 @@
 
 -define(NAME, {payments, ~"tenant-1"}).
 
+a_registry_that_is_refused_the_table_does_not_start_test() ->
+    _ = application:stop(seki),
+    {ok, Keeper} = seki_registry_keeper:start_link(),
+    Self = self(),
+    {Holder, Monitor} = spawn_monitor(fun() ->
+        true = register(seki_registry, self()),
+        ok = seki_registry_keeper:claim(),
+        true = unregister(seki_registry),
+        Self ! holding,
+        receive
+            stop -> ok
+        end
+    end),
+    receive
+        holding -> ok
+    end,
+    Trapping = process_flag(trap_exit, true),
+    Started = seki_registry:start_link(),
+    process_flag(trap_exit, Trapping),
+    ?assertEqual({error, {no_table, not_the_owner}}, Started),
+    ?assertEqual(undefined, whereis(seki_registry)),
+    ?assertEqual(Holder, ets:info(seki_registry, owner)),
+    Holder ! stop,
+    receive
+        {'DOWN', Monitor, process, Holder, normal} -> ok
+    end,
+    ok = gen_server:stop(Keeper).
+
 registry_test_() ->
     {foreach,
         fun() ->
