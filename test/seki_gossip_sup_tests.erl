@@ -21,8 +21,25 @@ gossip_test_() ->
             fun a_gossip_crash_loop_ends_the_gossip_of_one_limiter/0,
             fun gossip_ends_with_the_owner_of_its_table/0,
             fun gossip_ends_with_the_limiter_registry/0,
-            fun gossip_ends_with_its_limiter/0
+            fun gossip_ends_with_its_limiter/0,
+            fun a_gossip_process_is_given_five_seconds_to_stop/0,
+            fun no_gossip_is_linked_while_the_supervisor_is_down/0
         ]}.
+
+a_backend_started_without_seki_is_stopped_while_seki_runs_test() ->
+    _ = application:stop(seki),
+    {ok, State} = seki_backend_pg:init(#{gossip_interval => 3600000}),
+    {Tab, Gossip} = started(State),
+    {ok, _} = application:ensure_all_started(seki),
+    try
+        ?assertEqual([], supervisor:which_children(seki_gossip_sup)),
+        ?assertEqual(ok, seki_backend_pg:terminate(State)),
+        ?assertNot(is_process_alive(Gossip)),
+        ?assertEqual(undefined, ets:info(Tab, id))
+    after
+        ok = application:stop(seki),
+        ok = gen_server:stop(seki_pg)
+    end.
 
 without_seki_gossip_is_linked_to_its_caller_test() ->
     _ = application:stop(seki),
@@ -128,6 +145,53 @@ gossip_ends_with_its_limiter() ->
     end,
     ?assertEqual([], supervisor:which_children(seki_gossip_sup)),
     ?assertEqual(undefined, ets:info(Tab, id)).
+
+a_gossip_process_is_given_five_seconds_to_stop() ->
+    ok = seki:new_limiter(specified, ?OPTS),
+    {Tab, Gossip} = gossip(specified),
+    [Supervisor] = [
+        Pid
+     || {Id, Pid, supervisor, _Modules} <:- supervisor:which_children(seki_gossip_sup),
+        Id =:= Tab,
+        is_pid(Pid)
+    ],
+    ?assertEqual([{Tab, Gossip, worker, [seki_pg_gossip]}], supervisor:which_children(Supervisor)),
+    {ok, Spec} = supervisor:get_childspec(Supervisor, Tab),
+    ?assertEqual(
+        #{restart => transient, shutdown => 5000, significant => true, type => worker},
+        maps:with([restart, shutdown, significant, type], Spec)
+    ).
+
+no_gossip_is_linked_while_the_supervisor_is_down() ->
+    Registry = running(seki_limiter_registry),
+    Supervisor = running(seki_gossip_sup),
+    Links = process_info(Registry, links),
+    Opts = ?OPTS,
+    ok = sys:suspend(seki_sup),
+    try
+        Monitor = monitor(process, Supervisor),
+        exit(Supervisor, kill),
+        receive
+            {'DOWN', Monitor, process, Supervisor, killed} -> ok
+        end,
+        ?assertMatch(
+            {error, {backend_failed, {noproc, _}}},
+            seki:new_limiter(unheld, Opts#{
+                backend_opts => #{
+                    table_name => seki_gossip_sup_tests_unheld, gossip_interval => 3600000
+                }
+            })
+        ),
+        ?assertEqual(Links, process_info(Registry, links)),
+        ?assertEqual(
+            [],
+            [Tab || Tab <:- ets:all(), ets:info(Tab, name) =:= seki_gossip_sup_tests_unheld]
+        )
+    after
+        ok = sys:resume(seki_sup)
+    end,
+    ?assertEqual(Registry, whereis(seki_limiter_registry)),
+    ?assertError({limiter_not_found, unheld}, seki:check(unheld, user)).
 
 gossip(Limiter) ->
     {gcra, seki_backend_pg, State, _Config} = seki_limiter_registry:lookup(Limiter),

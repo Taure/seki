@@ -16,20 +16,27 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %% Without the application there is no supervisor to hold it, and the gossip
-%% process is linked to its caller.
+%% process is linked to its caller. With it, a gossip process is only ever
+%% started under this supervisor: while the supervisor is itself being
+%% restarted the start fails, and nothing is linked to the caller.
 -spec start_gossip(ets:table(), map()) -> {ok, pid()} | {error, term()}.
 start_gossip(Tab, Opts) ->
-    case whereis(?MODULE) of
-        undefined ->
-            seki_pg_gossip:start_link(Opts);
-        _Supervisor ->
-            seki_name_sup:start(?MODULE, #{
-                id => Tab,
-                start => {seki_pg_gossip, start_link, [Opts]},
-                restart => transient,
-                shutdown => 5000,
-                significant => true
-            })
+    case whereis(seki_sup) of
+        undefined -> seki_pg_gossip:start_link(Opts);
+        _Running -> supervised(Tab, Opts)
+    end.
+
+supervised(Tab, Opts) ->
+    try
+        seki_name_sup:start(?MODULE, #{
+            id => Tab,
+            start => {seki_pg_gossip, start_link, [Opts]},
+            restart => transient,
+            shutdown => 5000,
+            significant => true
+        })
+    catch
+        exit:Reason -> {error, Reason}
     end.
 
 %% `Started` is the process as it was first started. It is only stopped here
