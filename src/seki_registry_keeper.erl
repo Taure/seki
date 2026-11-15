@@ -4,8 +4,13 @@
 
 %% Holds the registry's table while the registry is not running: it creates
 %% the table, gives it to the registry and inherits it when the registry
-%% dies. The names outlive a restart of the registry, and only the registry
-%% ever writes them.
+%% dies, so the names outlive a restart of the registry.
+%%
+%% The registry never outlives its keeper, so a keeper that starts finds no
+%% table: the names were lost with it. The processes they named are still
+%% running under their supervisors, which hold each name as a child id, and
+%% the new table starts out with those. Nothing else ever writes the table
+%% but the registry.
 
 -export([start_link/0, claim/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -25,10 +30,13 @@ claim() ->
 
 -spec init([]) -> {ok, []}.
 init([]) ->
-    case ets:whereis(?TAB) of
-        undefined -> new_table();
-        _RegistryOwns -> seki_registry:keeper_restarted()
-    end,
+    _ = ets:new(?TAB, [
+        named_table, protected, set, {read_concurrency, true}, {heir, self(), ?TAB}
+    ]),
+    true = ets:insert(?TAB, [
+        {Name, Pid, recovered}
+     || {Name, Pid} <- seki_breaker_sup:named() ++ seki_process_sup:named()
+    ]),
     {ok, []}.
 
 -spec handle_call(term(), gen_server:from(), []) -> {reply, term(), []}.
@@ -52,10 +60,6 @@ handle_info(Message, State) ->
 
 -spec give(pid(), pid() | port() | undefined) -> ok | {error, not_the_registry | not_the_owner}.
 give(Registry, Registry) ->
-    case ets:whereis(?TAB) of
-        undefined -> new_table();
-        _Held -> ok
-    end,
     try ets:give_away(?TAB, Registry, ?TAB) of
         true -> ok
     catch
@@ -63,10 +67,3 @@ give(Registry, Registry) ->
     end;
 give(_Caller, _Registry) ->
     {error, not_the_registry}.
-
--spec new_table() -> ok.
-new_table() ->
-    _ = ets:new(?TAB, [
-        named_table, protected, set, {read_concurrency, true}, {heir, self(), ?TAB}
-    ]),
-    ok.

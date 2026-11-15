@@ -2,12 +2,12 @@
 -moduledoc false.
 -behaviour(gen_server).
 
-%% This process owns the table and is the only one to write it. It takes the
-%% table from `seki_registry_keeper`, which inherits it back when this process
-%% dies. The names therefore outlive a restart of the registry, which monitors
-%% whatever the table holds when it starts.
+%% This process owns the table and is the only one to write it while it runs.
+%% It takes the table from `seki_registry_keeper`, which inherits it back when
+%% this process dies. The names therefore outlive a restart of the registry,
+%% which monitors whatever the table holds when it starts.
 
--export([start_link/0, keeper_restarted/0, registration/1, server/1]).
+-export([start_link/0, registration/1, server/1, named_children/1]).
 -export([register_name/2, unregister_name/1, whereis_name/1, send/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -20,10 +20,6 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
--spec keeper_restarted() -> ok.
-keeper_restarted() ->
-    gen_server:cast(?MODULE, keeper_restarted).
-
 -spec registration(seki:name()) -> {local, atom()} | via().
 registration(Name) when is_atom(Name) -> {local, Name};
 registration(Name) when not is_pid(Name) -> {via, ?MODULE, Name}.
@@ -32,6 +28,20 @@ registration(Name) when not is_pid(Name) -> {via, ?MODULE, Name}.
 server(Name) when is_atom(Name) -> Name;
 server(Pid) when is_pid(Pid) -> Pid;
 server(Name) -> {via, ?MODULE, Name}.
+
+%% A supervisor that starts named processes gives each child its name as its
+%% id, so it can say which names it holds when the table has been lost.
+-spec named_children(atom()) -> [{seki:name(), pid()}].
+named_children(Supervisor) ->
+    try supervisor:which_children(Supervisor) of
+        Children ->
+            [
+                {Name, Pid}
+             || {Name, Pid, _Type, _Modules} <- Children, is_pid(Pid), not is_atom(Name)
+            ]
+    catch
+        exit:_NotRunning -> []
+    end.
 
 -spec register_name(seki:name(), pid()) -> yes | no.
 register_name(Name, Pid) when is_pid(Pid), node(Pid) =:= node() ->
@@ -98,12 +108,6 @@ handle_call(Request, _From, Names) ->
     {reply, {error, unknown_request}, Names}.
 
 -spec handle_cast(term(), names()) -> {noreply, names()}.
-handle_cast(keeper_restarted, Names) ->
-    case whereis(seki_registry_keeper) of
-        Keeper when is_pid(Keeper) -> true = ets:setopts(?TAB, {heir, Keeper, ?TAB});
-        undefined -> true
-    end,
-    {noreply, Names};
 handle_cast(Message, Names) ->
     ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, Names}.

@@ -19,6 +19,10 @@ registry_test_() ->
             fun a_message_reaches_the_named_process/0,
             fun names_outlive_a_restart_of_the_registry/0,
             fun names_outlive_a_restart_of_the_keeper/0,
+            fun names_outlive_the_loss_of_the_registry_and_its_keeper/0,
+            fun a_name_that_outlived_the_table_is_taken_until_it_is_deleted/0,
+            fun a_call_while_the_table_is_lost_reaches_its_process_or_exits/0,
+            fun a_process_gone_with_the_table_restarts_under_its_name/0,
             fun only_the_registry_writes_the_table/0,
             fun only_the_registry_is_given_the_table/0,
             fun the_registry_restarts_over_any_row/0,
@@ -141,6 +145,103 @@ names_outlive_a_restart_of_the_keeper() ->
     _ = restarted(seki_registry, Registry),
     ?assertEqual(Breaker, seki_registry:whereis_name(?NAME)),
     ?assertEqual(closed, seki:state(?NAME)).
+
+names_outlive_the_loss_of_the_registry_and_its_keeper() ->
+    Named = named_processes(),
+    {ok, Atom} = seki:new_breaker(seki_registry_tests_kept, #{}),
+    Supervisors = [whereis(Name) || Name <:- [seki_sup, seki_breaker_sup, seki_process_sup]],
+    [
+        begin
+            ok = lose_the_table(Order),
+            [?assertEqual(Pid, seki_registry:whereis_name(Name)) || {Name, Pid} <:- Named],
+            ?assertEqual(length(Named), ets:info(seki_registry, size))
+        end
+     || Order <:- [
+            [seki_registry_keeper, seki_registry],
+            [seki_registry, seki_registry_keeper],
+            [seki_registry_keeper]
+        ]
+    ],
+    ?assertEqual(
+        Supervisors, [whereis(Name) || Name <:- [seki_sup, seki_breaker_sup, seki_process_sup]]
+    ),
+    ?assertEqual(Atom, whereis(seki_registry_tests_kept)),
+    ?assertEqual(open, seki:state(?NAME)),
+    ?assertEqual({error, circuit_open}, seki:call(?NAME, fun() -> ok end)),
+    ?assertEqual({error, bulkhead_full}, seki_bulkhead:acquire({bulkhead, lost})),
+    ?assertEqual(ok, seki_shed:admit([shed, lost])),
+    ?assertEqual({ok, done}, seki_adaptive:call(~"adaptive lost", fun() -> done end)),
+    ?assertEqual(ok, seki_health:readiness({health, lost})).
+
+a_name_that_outlived_the_table_is_taken_until_it_is_deleted() ->
+    Named = named_processes(),
+    ok = lose_the_table([seki_registry_keeper, seki_registry]),
+    {?NAME, Breaker} = lists:keyfind(?NAME, 1, Named),
+    {{bulkhead, lost}, Bulkhead} = lists:keyfind({bulkhead, lost}, 1, Named),
+    ?assertEqual({error, {already_started, Breaker}}, seki:new_breaker(?NAME, #{})),
+    ?assertEqual(
+        {error, {already_started, Bulkhead}}, seki:new_bulkhead({bulkhead, lost}, #{})
+    ),
+    ?assertEqual(ok, seki:delete_breaker(?NAME)),
+    ?assertEqual(ok, seki:delete_bulkhead({bulkhead, lost})),
+    _ = sys:get_state(seki_registry),
+    ?assertEqual(undefined, seki_registry:whereis_name(?NAME)),
+    ?assertEqual(length(Named) - 2, ets:info(seki_registry, size)),
+    {ok, Again} = seki:new_breaker(?NAME, #{}),
+    ?assertEqual(Again, seki_registry:whereis_name(?NAME)),
+    ?assertEqual(closed, seki:state(?NAME)),
+    {ok, _} = seki:new_bulkhead({bulkhead, lost}, #{max_concurrent => 1}),
+    ?assertEqual({ok, done}, seki_bulkhead:call({bulkhead, lost}, fun() -> done end)).
+
+a_call_while_the_table_is_lost_reaches_its_process_or_exits() ->
+    {ok, _} = seki:new_breaker(?NAME, #{}),
+    Self = self(),
+    Caller = spawn_link(fun() -> Self ! {seen, calls_until_stopped(#{})} end),
+    [ok = lose_the_table([seki_registry_keeper, seki_registry]) || _ <:- lists:seq(1, 3)],
+    Caller ! stop,
+    Seen =
+        receive
+            {seen, Outcomes} -> Outcomes
+        after 5000 -> nothing
+        end,
+    ?assertMatch(#{closed := _}, Seen),
+    ?assertEqual([], maps:keys(Seen) -- [closed, noproc]).
+
+calls_until_stopped(Seen) ->
+    receive
+        stop -> Seen
+    after 0 ->
+        Outcome =
+            try
+                seki:state(?NAME)
+            catch
+                exit:{noproc, _} -> noproc
+            end,
+        calls_until_stopped(Seen#{Outcome => maps:get(Outcome, Seen, 0) + 1})
+    end.
+
+a_process_gone_with_the_table_restarts_under_its_name() ->
+    {ok, Kept} = seki:new_breaker(?NAME, #{}),
+    {ok, Gone} = seki:new_bulkhead({bulkhead, gone}, #{max_concurrent => 1}),
+    {ok, Deleted} = seki:new_shed({shed, deleted}, #{}),
+    Supervisor = whereis(seki_process_sup),
+    Registry = running(seki_registry),
+    [exit(Pid, kill) || Pid <:- [running(seki_registry_keeper), Registry, Gone]],
+    Restarted = restarted({bulkhead, gone}, Gone),
+    _ = restarted(seki_registry, Registry),
+    ok = seki:delete_shed({shed, deleted}),
+    _ = sys:get_state(seki_registry),
+    ?assertNot(is_process_alive(Deleted)),
+    ?assertEqual(Supervisor, whereis(seki_process_sup)),
+    ?assertEqual(Kept, seki_registry:whereis_name(?NAME)),
+    ?assertEqual(Restarted, seki_registry:whereis_name({bulkhead, gone})),
+    ?assertEqual(undefined, seki_registry:whereis_name({shed, deleted})),
+    ?assertEqual(
+        lists:sort([{?NAME, Kept}, {{bulkhead, gone}, Restarted}]),
+        lists:sort([{Name, Pid} || {Name, Pid, _Monitor} <:- ets:tab2list(seki_registry)])
+    ),
+    ?assertEqual({ok, done}, seki_bulkhead:call({bulkhead, gone}, fun() -> done end)),
+    {ok, _} = seki:new_shed({shed, deleted}, #{}).
 
 only_the_registry_writes_the_table() ->
     {ok, Breaker} = seki:new_breaker(?NAME, #{}),
@@ -507,6 +608,37 @@ limiter_checks(Name) ->
         fun() -> seki:reset(Name, user) end,
         fun() -> seki:execute(seki_registry_tests_unknown, Name, Never) end
     ].
+
+%% One of everything, each named by a term and holding some state: the breaker
+%% is open and the bulkhead is full.
+named_processes() ->
+    {ok, Breaker} = seki:new_breaker(?NAME, #{window_size => 2, wait_duration => 60000}),
+    [seki:call(?NAME, fun() -> {error, down} end) || _ <:- lists:seq(1, 2)],
+    {ok, Bulkhead} = seki:new_bulkhead({bulkhead, lost}, #{max_concurrent => 1}),
+    ok = seki_bulkhead:acquire({bulkhead, lost}),
+    {ok, Shed} = seki:new_shed([shed, lost], #{}),
+    {ok, Adaptive} = seki:new_adaptive(~"adaptive lost", #{}),
+    {ok, Health} = seki:new_health({health, lost}, #{vm_checks => false}),
+    [
+        {?NAME, Breaker},
+        {{bulkhead, lost}, Bulkhead},
+        {[shed, lost], Shed},
+        {~"adaptive lost", Adaptive},
+        {{health, lost}, Health}
+    ].
+
+lose_the_table(Names) ->
+    Before = [{Name, running(Name)} || Name <:- [seki_registry_keeper, seki_registry]],
+    [exit(running(Name), kill) || Name <:- Names],
+    [_ = sys:get_state(restarted(Name, Old)) || {Name, Old} <:- Before],
+    ok.
+
+-spec running(atom()) -> pid().
+running(Name) ->
+    live(whereis(Name)).
+
+-spec live(term()) -> pid().
+live(Pid) when is_pid(Pid) -> Pid.
 
 queued(Name, Messages) ->
     queued(Name, Messages, 100).

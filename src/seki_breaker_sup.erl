@@ -6,7 +6,8 @@
 -export([
     start_link/0,
     start_breaker/2,
-    stop_breaker/1
+    stop_breaker/1,
+    named/0
 ]).
 
 -export([init/1]).
@@ -37,6 +38,10 @@ stop_breaker(Name) ->
         Error ->
             Error
     end.
+
+-spec named() -> [{seki:name(), pid()}].
+named() ->
+    seki_registry:named_children(?MODULE).
 
 init([]) ->
     SupFlags = #{

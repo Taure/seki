@@ -199,6 +199,14 @@ stopped, raises, and the function you passed is not run:
 | `seki:check/2,3`, `inspect/2,3`, `reset/2`, `execute/3` | raises `error:{limiter_not_found, Name}` | raises `error:badarg` |
 | `seki:reset_breaker/1`, `seki_bulkhead:release/1`, `seki_shed:complete/2`, `seki_adaptive:release/2` | returns `ok`, does nothing | returns `ok`, does nothing |
 
+The names that are not atoms are kept in one table. If seki's registry and the
+keeper of its table are both lost, the table is made again from the processes
+that are still running, which takes well under a millisecond on an idle node.
+In between, a call to a name that is not an atom exits with `{noproc, _}` and a
+cast does nothing, as for an unknown name. The processes keep running, and
+each is reached by its name again with the state it had: an open breaker is
+still open. Names that are atoms are not affected.
+
 None of these is in the return types. A catch-all around such a call
 (`catch _:_ -> allow`, or a bare `rescue` in Elixir) turns every one of them
 into "allow". Catch them by name, and decide there whether the request goes

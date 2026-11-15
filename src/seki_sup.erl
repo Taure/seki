@@ -17,12 +17,9 @@ init([]) ->
     },
     Children = [
         #{
-            id => seki_registry_keeper,
-            start => {seki_registry_keeper, start_link, []}
-        },
-        #{
-            id => seki_registry,
-            start => {seki_registry, start_link, []}
+            id => seki_registry_sup,
+            start => {seki_registry_sup, start_link, []},
+            type => supervisor
         },
         #{
             id => seki_breaker_sup,
