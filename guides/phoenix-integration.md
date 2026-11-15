@@ -299,19 +299,23 @@ defmodule MyApp.Telemetry do
 
   defp handle_event([:seki, :breaker, :state_change], _measurements, metadata, _config) do
     require Logger
-    Logger.warning("Circuit breaker #{metadata.name}: #{metadata.from} -> #{metadata.to}")
+    Logger.warning("Circuit breaker #{inspect(metadata.name)}: #{metadata.from} -> #{metadata.to}")
   end
 
   defp handle_event([:seki, :rate_limit, :deny], measurements, metadata, _config) do
     require Logger
-    Logger.info("Rate limited #{metadata.name}/#{inspect(metadata.key)}, retry_after: #{measurements.retry_after}ms")
+    Logger.info("Rate limited #{inspect(metadata.name)}/#{inspect(metadata.key)}, retry_after: #{measurements.retry_after}ms")
   end
 
   defp handle_event([:seki, :bulkhead, :rejected], _measurements, metadata, _config) do
     require Logger
-    Logger.warning("Bulkhead #{metadata.name} full, request rejected")
+    Logger.warning("Bulkhead #{inspect(metadata.name)} full, request rejected")
   end
 end
 ```
 
 Call `MyApp.Telemetry.attach()` from your `Application.start/2`.
+
+`metadata.name` is the term the breaker, limiter or bulkhead was named by, and
+it can be any term: print it with `inspect/1`. A handler that raises is
+detached from all the events it was attached to.

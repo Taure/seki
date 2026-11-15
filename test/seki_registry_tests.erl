@@ -36,7 +36,9 @@ registry_test_() ->
             fun a_pid_is_not_a_name/0,
             fun a_tuple_is_a_name_and_not_a_node/0,
             fun naming_by_terms_creates_no_atoms/0,
-            fun nothing_is_registered_while_seki_is_stopped/0
+            fun nothing_is_registered_while_seki_is_stopped/0,
+            fun an_unknown_name_lets_nothing_through/0,
+            fun a_stopped_seki_lets_nothing_through/0
         ]}.
 
 an_atom_is_registered_locally() ->
@@ -392,6 +394,60 @@ nothing_is_registered_while_seki_is_stopped() ->
     ?assertExit({noproc, _}, seki:state(?NAME)),
     ?assertExit({noproc, _}, seki:state(seki_registry_tests_no_breaker)),
     ?assertEqual(ok, seki:reset_breaker(?NAME)).
+
+an_unknown_name_lets_nothing_through() ->
+    [nothing_gets_through(Name) || Name <:- [seki_registry_tests_unknown, {unknown, 1}]],
+    [
+        ?assertError({limiter_not_found, Name}, Check())
+     || Name <:- [seki_registry_tests_unknown, {unknown, 1}], Check <:- limiter_checks(Name)
+    ].
+
+a_stopped_seki_lets_nothing_through() ->
+    Opts = #{algorithm => token_bucket, limit => 1, window => 1000},
+    ok = seki:new_limiter(seki_registry_tests_limiter, Opts),
+    ok = seki:new_limiter({limiter, 1}, Opts),
+    ok = application:stop(seki),
+    [nothing_gets_through(Name) || Name <:- [seki_registry_tests_unknown, {unknown, 1}]],
+    [
+        ?assertError(badarg, Check())
+     || Name <:- [seki_registry_tests_limiter, {limiter, 1}], Check <:- limiter_checks(Name)
+    ].
+
+nothing_gets_through(Name) ->
+    Never = fun() -> error(must_not_run) end,
+    [
+        ?assertExit({noproc, _}, Call())
+     || Call <:- [
+            fun() -> seki:call(Name, Never) end,
+            fun() -> seki:call(Name, Never, #{}) end,
+            fun() -> seki:state(Name) end,
+            fun() -> seki_bulkhead:call(Name, Never) end,
+            fun() -> seki_bulkhead:acquire(Name) end,
+            fun() -> seki_bulkhead:status(Name) end,
+            fun() -> seki_shed:admit(Name) end,
+            fun() -> seki_shed:status(Name) end,
+            fun() -> seki_adaptive:call(Name, Never) end,
+            fun() -> seki_adaptive:acquire(Name) end,
+            fun() -> seki_adaptive:status(Name) end,
+            fun() -> seki_health:check(Name) end,
+            fun() -> seki_health:readiness(Name) end
+        ]
+    ],
+    ?assertEqual({error, unhealthy}, seki_health:liveness(Name)),
+    ?assertEqual(ok, seki:reset_breaker(Name)),
+    ?assertEqual(ok, seki_bulkhead:release(Name)),
+    ?assertEqual(ok, seki_shed:complete(Name, 1)),
+    ?assertEqual(ok, seki_adaptive:release(Name, ok)).
+
+limiter_checks(Name) ->
+    Never = fun() -> error(must_not_run) end,
+    [
+        fun() -> seki:check(Name, user) end,
+        fun() -> seki:check(Name, user, 1) end,
+        fun() -> seki:inspect(Name, user) end,
+        fun() -> seki:reset(Name, user) end,
+        fun() -> seki:execute(seki_registry_tests_unknown, Name, Never) end
+    ].
 
 remote_pid() ->
     Node = ~"elsewhere@nohost",

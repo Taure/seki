@@ -511,6 +511,8 @@ All events use the `[seki, ...]` prefix:
 | `[seki, bulkhead, acquire]` | `current`, `available` | `name` |
 | `[seki, bulkhead, rejected]` | `current`, `available` | `name` |
 
+`name` is the term the limiter, breaker or bulkhead was named by, which can be any term. Print it with `~p` or `inspect/1`.
+
 ## OpenTelemetry
 
 ```erlang

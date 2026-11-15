@@ -155,7 +155,11 @@ new_limiter(Name, Opts) ->
 check(Name, Key) ->
     check(Name, Key, 1).
 
--doc "Check if a request with a custom cost is allowed for the given key.".
+-doc """
+Check if a request with a custom cost is allowed for the given key.
+
+Raises `{limiter_not_found, Name}` if no limiter has this name.
+""".
 -spec check(limiter_name(), key(), pos_integer()) -> check_result().
 check(Name, Key, Cost) ->
     {Algorithm, Backend, BackendState, Config} = seki_limiter_registry:lookup(Name),
@@ -201,7 +205,11 @@ new_breaker(Name, Opts) ->
 call(Name, Fun) ->
     call(Name, Fun, #{}).
 
--doc "Execute a function through a circuit breaker with options.".
+-doc """
+Execute a function through a circuit breaker with options.
+
+Exits with `{noproc, _}` if no breaker has this name. `Fun` is not run.
+""".
 -spec call(breaker_name(), fun(() -> term()), map()) -> call_result().
 call(Name, Fun, CallOpts) ->
     seki_breaker:call(Name, Fun, CallOpts).
@@ -269,7 +277,12 @@ delete_health(Name) ->
 %% Combined API
 %%----------------------------------------------------------------------
 
--doc "Check rate limit then execute through circuit breaker. Returns `{error, {rate_limited, Info}}` if denied.".
+-doc """
+Check rate limit then execute through circuit breaker. Returns `{error, {rate_limited, Info}}` if denied.
+
+Raises as `check/3` and `call/3` do for a limiter or breaker that does not
+exist. `Fun` is not run.
+""".
 -spec execute(breaker_name(), limiter_name(), fun(() -> term())) ->
     call_result() | {error, rate_limited}.
 execute(Breaker, Limiter, Fun) ->
