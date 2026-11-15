@@ -8,6 +8,7 @@ worker_test_() ->
     {setup, fun() -> {ok, _} = application:ensure_all_started(seki) end,
         fun(_) -> application:stop(seki) end, [
             {"one worker per scheduler", fun workers_started/0},
+            {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
             {"no worker has a registered name", fun workers_have_no_name/0},
             {"contended key runs on its worker", fun contended_key_runs_on_worker/0},
             {"errors in a step reach the caller", fun step_error_reaches_caller/0},
@@ -188,3 +189,10 @@ conflict_then_crash_step(Current, Tab, Key, Counter) ->
         0 -> conflict_once_step(Current, Tab, Key, Counter);
         _ -> error(boom)
     end.
+
+unexpected_messages_are_dropped() ->
+    [Worker | _] = workers(),
+    ?assertEqual(
+        ok,
+        seki_unexpected_tests:dropped_by(Worker, seki_ets_worker, {error, unknown_request})
+    ).

@@ -34,15 +34,20 @@ init([]) ->
 -spec handle_call(term(), gen_server:from(), []) -> {reply, term(), []}.
 handle_call(claim, {Caller, _Tag}, State) ->
     {reply, give(Caller, whereis(seki_registry)), State};
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown_request}, State}.
 
 -spec handle_cast(term(), []) -> {noreply, []}.
-handle_cast(_Message, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
 -spec handle_info(term(), []) -> {noreply, []}.
-handle_info(_Info, State) ->
+handle_info({'ETS-TRANSFER', ?TAB, _Registry, ?TAB}, State) ->
+    {noreply, State};
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 -spec give(pid(), pid() | port() | undefined) -> ok | {error, not_the_registry | not_the_owner}.

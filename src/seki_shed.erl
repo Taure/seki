@@ -187,7 +187,8 @@ handle_call(status, _From, State) ->
             avg_latency_ms => AvgLatency
         },
         State};
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown}, State}.
 
 handle_cast({complete, DurationMs}, State) ->
@@ -196,10 +197,12 @@ handle_cast({complete, DurationMs}, State) ->
     },
     NewState = update_codel(DurationMs, NewState0),
     {noreply, NewState};
-handle_cast(_Msg, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
-handle_info(_Info, State) ->
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

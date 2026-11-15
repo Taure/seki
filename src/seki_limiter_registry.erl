@@ -104,17 +104,20 @@ handle_call({unregister, Name}, _From, State) ->
         [] ->
             {reply, ok, State}
     end;
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown_request}, State}.
 
-handle_cast(_Msg, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
 handle_info(cleanup, State) ->
     run_cleanup(),
     schedule_cleanup(),
     {noreply, State};
-handle_info(_Info, State) ->
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

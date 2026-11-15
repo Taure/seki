@@ -65,6 +65,7 @@ rate_limit_through_pg() ->
 gossip_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"gossip start and stop", fun gossip_start_stop/0},
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"gossip receives merge cast", fun gossip_merge_cast/0},
         {"gossip broadcasts to peers", fun gossip_broadcast/0}
     ]}.
@@ -390,3 +391,10 @@ gossip_limiter(Name, Algorithm) ->
 
 gossip_pid(State) when is_tuple(State) ->
     element(3, State).
+
+unexpected_messages_are_dropped() ->
+    {Gossip, _State} = gossip_limiter(pg_stray),
+    ?assertEqual(
+        ok, seki_unexpected_tests:dropped_by(Gossip, seki_pg_gossip, {error, unknown})
+    ),
+    seki:delete_limiter(pg_stray).

@@ -12,6 +12,7 @@ cleanup(_) ->
 
 shed_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"admits requests under capacity", fun admits_under_capacity/0},
         {"sheds when at capacity", fun sheds_at_capacity/0},
         {"p0 always admitted", fun p0_always_admitted/0},
@@ -132,3 +133,7 @@ complete_reduces() ->
     timer:sleep(10),
     #{in_flight := 0} = seki_shed:status(sh_comp),
     gen_server:stop(sh_comp).
+
+unexpected_messages_are_dropped() ->
+    {ok, Pid} = seki_shed:start_link(sh_stray, #{}),
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_shed, {error, unknown})).

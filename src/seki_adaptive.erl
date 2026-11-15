@@ -207,7 +207,8 @@ handle_call(status, _From, State) ->
             available => seki_number:larger(0, IntLimit - InFlight)
         },
         State};
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown}, State}.
 
 handle_cast({release, Pid, Outcome}, State) ->
@@ -228,7 +229,8 @@ handle_cast({release, Pid, Outcome}, State) ->
         error ->
             {noreply, State}
     end;
-handle_cast(_Msg, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
 handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
@@ -253,7 +255,8 @@ handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
         #{} ->
             {noreply, State}
     end;
-handle_info(_Info, State) ->
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

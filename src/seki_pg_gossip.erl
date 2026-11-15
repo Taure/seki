@@ -75,7 +75,8 @@ init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts)
         window = maps:get(window, Opts, undefined)
     }}.
 
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown}, State}.
 
 handle_cast(
@@ -92,14 +93,16 @@ handle_cast(
         Window
     ),
     {noreply, State};
-handle_cast(_Msg, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
 handle_info(gossip, #state{interval = Interval} = State) ->
     broadcast_state(State),
     schedule_gossip(Interval),
     {noreply, State};
-handle_info(_Info, State) ->
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 terminate(Reason, #state{scope = Scope, group = Group}) ->

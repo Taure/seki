@@ -24,6 +24,7 @@ registry_test_() ->
             fun the_registry_restarts_over_any_row/0,
             fun only_a_local_process_is_registered/0,
             fun an_unknown_message_leaves_the_registry_running/0,
+            fun an_unexpected_message_is_dropped/0,
             fun a_breaker_is_named_by_a_term/0,
             fun a_bulkhead_is_named_by_a_term/0,
             fun a_load_shedder_is_named_by_a_term/0,
@@ -228,6 +229,12 @@ an_unknown_message_leaves_the_registry_running() ->
     ],
     ?assertEqual(Registry, whereis(seki_registry)),
     ?assertEqual(Keeper, whereis(seki_registry_keeper)),
+    ?assertEqual(self(), seki_registry:whereis_name(?NAME)).
+
+an_unexpected_message_is_dropped() ->
+    ?assertEqual(yes, seki_registry:register_name(?NAME, self())),
+    Refusal = {error, unknown_request},
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(seki_registry, seki_registry, Refusal)),
     ?assertEqual(self(), seki_registry:whereis_name(?NAME)).
 
 a_breaker_is_named_by_a_term() ->

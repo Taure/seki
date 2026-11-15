@@ -12,6 +12,7 @@ cleanup(_) ->
 
 health_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"starts healthy with vm checks", fun starts_healthy/0},
         {"register custom check", fun custom_check/0},
         {"critical check makes unhealthy", fun critical_unhealthy/0},
@@ -167,3 +168,7 @@ invalid_result() ->
 
 returning(Returned) ->
     fun() -> Returned end.
+
+unexpected_messages_are_dropped() ->
+    {ok, Pid} = seki_health:start_link(h_stray, #{vm_checks => false, check_interval => 60000}),
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_health, {error, unknown})).

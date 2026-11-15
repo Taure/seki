@@ -93,7 +93,8 @@ handle_call({register, Name, Pid}, _From, Names) when is_pid(Pid), node(Pid) =:=
     end;
 handle_call({unregister, Name}, _From, Names) ->
     {reply, ok, forget(Name, Names)};
-handle_call(_Request, _From, Names) ->
+handle_call(Request, _From, Names) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown_request}, Names}.
 
 -spec handle_cast(term(), names()) -> {noreply, names()}.
@@ -103,7 +104,8 @@ handle_cast(keeper_restarted, Names) ->
         undefined -> true
     end,
     {noreply, Names};
-handle_cast(_Message, Names) ->
+handle_cast(Message, Names) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, Names}.
 
 -spec handle_info(term(), names()) -> {noreply, names()}.
@@ -112,7 +114,10 @@ handle_info({'DOWN', Monitor, process, _Pid, _Reason}, Names) ->
         #{Monitor := Name} -> {noreply, forget(Name, Monitor, Names)};
         #{} -> {noreply, Names}
     end;
-handle_info(_Info, Names) ->
+handle_info({'ETS-TRANSFER', ?TAB, _Keeper, ?TAB}, Names) ->
+    {noreply, Names};
+handle_info(Message, Names) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, Names}.
 
 %%----------------------------------------------------------------------

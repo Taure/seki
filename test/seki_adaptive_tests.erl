@@ -12,6 +12,7 @@ cleanup(_) ->
 
 aimd_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"starts with initial limit", fun aimd_initial/0},
         {"allows calls within limit", fun aimd_allows/0},
         {"rejects when limit reached", fun aimd_rejects/0},
@@ -359,3 +360,7 @@ gradient_high_tolerance() ->
     %% With high tolerance, limit should increase
     ?assert(Limit >= 10),
     gen_server:stop(gr_tol).
+
+unexpected_messages_are_dropped() ->
+    {ok, Pid} = seki_adaptive:start_link(ad_stray, #{}),
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_adaptive, {error, unknown})).

@@ -189,17 +189,20 @@ handle_call({check_one, CheckName}, _From, State) ->
     end;
 handle_call(liveness, _From, State) ->
     {reply, ok, State};
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown}, State}.
 
-handle_cast(_Msg, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
 handle_info(run_checks, State) ->
     {_, NewState} = run_all_checks(State),
     schedule_check(State#state.check_interval),
     {noreply, NewState};
-handle_info(_Info, State) ->
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 terminate(_Reason, _State) ->

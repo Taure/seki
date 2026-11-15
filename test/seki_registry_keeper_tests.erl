@@ -13,7 +13,8 @@ keeper_test_() ->
         fun the_table_returns_when_the_registry_dies/0,
         fun a_keeper_started_over_a_held_table_tells_the_registry/0,
         fun a_claim_makes_a_table_that_is_gone/0,
-        fun an_unknown_message_leaves_the_keeper_running/0
+        fun an_unknown_message_leaves_the_keeper_running/0,
+        fun an_unexpected_message_is_dropped/0
     ].
 
 a_new_keeper_holds_a_protected_table() ->
@@ -65,6 +66,10 @@ the_table_returns_when_the_registry_dies() ->
     end,
     ok = wait_until(fun() -> ets:info(?TAB, owner) =:= Keeper end),
     ?assertMatch([{a_name, Registry, _}], ets:lookup(?TAB, a_name)),
+    ?assertEqual(
+        ok,
+        seki_unexpected_tests:dropped_by(Keeper, seki_registry_keeper, {error, unknown_request})
+    ),
     ok = become_registry(),
     ?assertEqual(ok, seki_registry_keeper:claim()),
     ?assertEqual(self(), ets:info(?TAB, owner)),
@@ -106,6 +111,13 @@ an_unknown_message_leaves_the_keeper_running() ->
     ok = gen_server:cast(Keeper, unknown),
     Keeper ! unknown,
     ?assertEqual([], sys:get_state(Keeper)),
+    ?assertEqual(Keeper, ets:info(?TAB, owner)),
+    stopped(Keeper).
+
+an_unexpected_message_is_dropped() ->
+    Keeper = started(),
+    Refusal = {error, unknown_request},
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Keeper, seki_registry_keeper, Refusal)),
     ?assertEqual(Keeper, ets:info(?TAB, owner)),
     stopped(Keeper).
 

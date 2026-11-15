@@ -12,6 +12,7 @@ cleanup(_) ->
 
 bulkhead_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"allows calls within limit", fun allows_within_limit/0},
         {"rejects when full", fun rejects_when_full/0},
         {"releases on process exit", fun releases_on_exit/0},
@@ -77,3 +78,7 @@ call_wraps() ->
     %% Verify slot was released
     ?assertEqual(#{current => 0, max => 2, available => 2}, seki_bulkhead:status(bh_call)),
     gen_server:stop(bh_call).
+
+unexpected_messages_are_dropped() ->
+    {ok, Pid} = seki_bulkhead:start_link(bh_stray, #{}),
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_bulkhead, {error, unknown})).

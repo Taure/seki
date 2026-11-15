@@ -23,6 +23,7 @@ cleanup(_) ->
 token_bucket_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"allows requests within limit", fun token_bucket_allow/0},
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"denies requests over limit", fun token_bucket_deny/0},
         {"inspect does not consume", fun token_bucket_inspect/0},
         {"remaining decreases with each request", fun token_bucket_remaining/0},
@@ -657,3 +658,14 @@ re_register() ->
     }),
     {allow, _} = seki:check(reg_re, key1),
     seki:delete_limiter(reg_re).
+
+unexpected_messages_are_dropped() ->
+    ok = seki:new_limiter(lim_stray, #{algorithm => token_bucket, limit => 1, window => 1000}),
+    ?assertEqual(
+        ok,
+        seki_unexpected_tests:dropped_by(
+            seki_limiter_registry, seki_limiter_registry, {error, unknown_request}
+        )
+    ),
+    ?assertMatch({allow, _}, seki:check(lim_stray, user)),
+    seki:delete_limiter(lim_stray).

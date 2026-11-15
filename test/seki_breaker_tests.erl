@@ -21,6 +21,7 @@ cleanup(_) ->
 basic_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"starts in closed state", fun starts_closed/0},
+        {"unexpected messages are dropped in every state", fun unexpected_messages_are_dropped/0},
         {"passes through successful calls", fun successful_calls/0},
         {"returns wrapped result", fun returns_wrapped_result/0},
         {"trips after failure threshold", fun trips_on_failures/0},
@@ -572,3 +573,25 @@ call_2_and_3() ->
     {ok, a} = seki:call(br_opts, fun() -> a end),
     {ok, b} = seki:call(br_opts, fun() -> b end, #{}),
     seki:delete_breaker(br_opts).
+
+unexpected_messages_are_dropped() ->
+    {ok, Breaker} = seki:new_breaker(br_stray, #{
+        window_size => 2, wait_duration => 300, half_open_requests => 2
+    }),
+    Refusal = {error, unknown_request},
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Breaker, seki_breaker, Refusal)),
+    ?assertEqual(closed, seki:state(br_stray)),
+    [seki:call(br_stray, fun() -> {error, down} end) || _ <:- lists:seq(1, 2)],
+    ?assertEqual(open, seki:state(br_stray)),
+    ?assertEqual([], seki_unexpected_tests:dropped_by(Breaker, Refusal)),
+    ?assertEqual(open, seki:state(br_stray)),
+    ?assertEqual({error, circuit_open}, seki:call(br_stray, fun() -> ok end)),
+    timer:sleep(400),
+    ?assertEqual(half_open, seki:state(br_stray)),
+    ?assertEqual({ok, ok}, seki:call(br_stray, fun() -> ok end)),
+    ?assertEqual([], seki_unexpected_tests:dropped_by(Breaker, Refusal)),
+    ?assertEqual(half_open, seki:state(br_stray)),
+    ?assertEqual({ok, ok}, seki:call(br_stray, fun() -> ok end)),
+    ?assertEqual(closed, seki:state(br_stray)),
+    ?assertEqual(Breaker, whereis(br_stray)),
+    seki:delete_breaker(br_stray).

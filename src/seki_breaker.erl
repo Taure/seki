@@ -170,7 +170,9 @@ closed({call, From}, {call, Fun}, Data) ->
 closed({call, From}, get_state, _Data) ->
     {keep_state_and_data, [{reply, From, closed}]};
 closed(cast, reset, Data) ->
-    {keep_state, reset_outcomes(Data)}.
+    {keep_state, reset_outcomes(Data)};
+closed(EventType, Event, _Data) ->
+    unexpected(EventType, Event).
 
 %%----------------------------------------------------------------------
 %% OPEN state
@@ -190,7 +192,9 @@ open(state_timeout, try_half_open, Data) ->
         #{domain => [seki]}
     ),
     emit_state_change(Data#data.name, open, half_open),
-    {next_state, half_open, Data#data{half_open_count = 0}}.
+    {next_state, half_open, Data#data{half_open_count = 0}};
+open(EventType, Event, _Data) ->
+    unexpected(EventType, Event).
 
 %%----------------------------------------------------------------------
 %% HALF_OPEN state
@@ -273,10 +277,22 @@ half_open({call, From}, get_state, _Data) ->
     {keep_state_and_data, [{reply, From, half_open}]};
 half_open(cast, reset, Data) ->
     emit_state_change(Data#data.name, half_open, closed),
-    {next_state, closed, reset_outcomes(Data)}.
+    {next_state, closed, reset_outcomes(Data)};
+half_open(EventType, Event, _Data) ->
+    unexpected(EventType, Event).
 
 terminate(_Reason, _State, _Data) ->
     ok.
+
+unexpected({call, From}, Request) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
+    {keep_state_and_data, [{reply, From, {error, unknown_request}}]};
+unexpected(cast, Message) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
+    keep_state_and_data;
+unexpected(_InfoOrTimeout, Message) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
+    keep_state_and_data.
 
 %%----------------------------------------------------------------------
 %% Internal - Outcome tracking
