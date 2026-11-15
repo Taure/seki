@@ -30,6 +30,20 @@ suits most rate limiting use cases.
 `init/1` returns `{error, {invalid_option, Key}}` when `scope` or
 `table_name` is not an atom, or `gossip_interval` is not a whole number of
 milliseconds from 1 to 4294967295.
+
+## The gossip process
+
+The gossip process is supervised by seki and is not linked to the process
+that called `init/1`, which owns the table. A gossip process that dies is
+restarted on the same table: the counters are kept and no limiter is lost. It
+stops when `terminate/1` is called or when the owner of the table exits.
+
+A gossip process that dies more than 3 times in 10 seconds is not restarted
+again. Its limiter keeps counting on this node and no longer shares its state
+with the other nodes until it is deleted and created again.
+
+Without the seki application running, the gossip process is linked to the
+caller of `init/1`.
 """.
 
 -behaviour(seki_backend).
@@ -83,11 +97,8 @@ cleanup(#state{local_tab = Tab}, OlderThan) ->
     seki_ets:cleanup(Tab, OlderThan).
 
 terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
-    logger:info(
-        "Distributed backend shutting down, stopping gossip",
-        #{domain => [seki]}
-    ),
-    seki_pg_gossip:stop(GossipPid),
+    ?LOG_INFO(#{msg => distributed_backend_stopping}, #{domain => [seki]}),
+    ok = seki_gossip_sup:stop_gossip(Tab, GossipPid),
     ets:delete(Tab),
     ok.
 
@@ -97,41 +108,45 @@ terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
 
 start(Opts) ->
     Scope = maps:get(scope, Opts, seki_pg),
+    ok = ensure_pg_scope(Scope),
     TableName = maps:get(table_name, Opts, seki_pg_data),
     Group = maps:get(group, Opts, {seki_limiters, TableName}),
-    %% Ensure pg scope exists
-    ok = ensure_pg_scope(Scope),
-    %% Local ETS for fast reads/writes
     Tab = ets:new(TableName, [
         set,
         public,
         {write_concurrency, auto}
     ]),
-    %% Start gossip process
     GossipInterval = maps:get(gossip_interval, Opts, 1000),
     Limiter = maps:get(seki_limiter, Opts, #{}),
-    {ok, GossipPid} = seki_pg_gossip:start_link(#{
+    Gossip = #{
         scope => Scope,
         group => Group,
         tab => Tab,
+        owner => self(),
         interval => GossipInterval,
         algorithm => maps:get(algorithm, Limiter, undefined),
         window => maps:get(window, Limiter, undefined)
-    }),
-    ?LOG_INFO(
-        #{
-            msg => distributed_backend_started,
-            scope => Scope,
-            group => seki_name:label(Group),
-            gossip_interval => GossipInterval
-        },
-        #{domain => [seki]}
-    ),
-    {ok, #state{
-        local_tab = Tab,
-        gossip_pid = GossipPid,
-        scope = Scope
-    }}.
+    },
+    case seki_gossip_sup:start_gossip(Tab, Gossip) of
+        {ok, GossipPid} ->
+            ?LOG_INFO(
+                #{
+                    msg => distributed_backend_started,
+                    scope => Scope,
+                    group => seki_name:label(Group),
+                    gossip_interval => GossipInterval
+                },
+                #{domain => [seki]}
+            ),
+            {ok, #state{
+                local_tab = Tab,
+                gossip_pid = GossipPid,
+                scope = Scope
+            }};
+        {error, Reason} ->
+            true = ets:delete(Tab),
+            {error, Reason}
+    end.
 
 ensure_pg_scope(Scope) ->
     case pg:start(Scope) of

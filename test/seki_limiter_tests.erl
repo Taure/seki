@@ -739,7 +739,7 @@ failing_backend_is_refused() ->
     ),
     ?assertError({limiter_not_found, lim_refused}, seki:check(lim_refused, user)),
     ?assertEqual(Tables, length(ets:all())),
-    ?assertEqual([], pg:which_groups(seki_pg)),
+    ?assertEqual([], supervisor:which_children(seki_gossip_sup)),
     ok = still_running(Kept).
 
 failing_backend_is_outlived() ->

@@ -34,8 +34,13 @@ requests through than the limit allows.
 `{error, Reason}`, raises, or returns anything else, `seki:new_limiter/2`
 returns `{error, {backend_failed, _}}` and no limiter is created. A failure
 in `cleanup/2` or `terminate/1` is logged and the other limiters carry on.
-Do not link a process to the caller of `init/1` unless its death should take
-every limiter with it.
+
+Two things a backend can do in `init/1` are not contained. A process it links
+to the caller takes every limiter with it when it dies: supervise such a
+process elsewhere, as `seki_backend_pg` does its gossip process. And an
+`init/1` that does not return holds up every later `seki:new_limiter/2` and
+`seki:delete_limiter/1`, which exit with a timeout after 5 seconds; checks
+against the limiters that exist are not held up.
 """.
 
 -callback init(Opts :: map()) -> {ok, State :: term()} | {error, Reason :: term()}.

@@ -35,6 +35,11 @@ init([]) ->
         #{
             id => seki_limiter_registry,
             start => {seki_limiter_registry, start_link, []}
+        },
+        #{
+            id => seki_gossip_sup,
+            start => {seki_gossip_sup, start_link, []},
+            type => supervisor
         }
         | seki_ets_worker:child_specs()
     ],

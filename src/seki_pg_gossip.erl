@@ -7,6 +7,8 @@ Joins a `pg` group and periodically broadcasts local ETS state to all peers.
 Merges received state using algorithm-aware strategies (max counts for sliding
 windows, lower tokens for token buckets, higher TAT for GCRA).
 
+Started with an `owner`, the process stops when that process exits.
+
 Used internally by `seki_backend_pg`.
 """.
 
@@ -37,7 +39,8 @@ Used internally by `seki_backend_pg`.
     tab :: ets:tid(),
     interval :: pos_integer(),
     algorithm :: seki:algorithm() | undefined,
-    window :: pos_integer() | undefined
+    window :: pos_integer() | undefined,
+    owner_monitor :: reference() | undefined
 }).
 
 %%----------------------------------------------------------------------
@@ -72,7 +75,8 @@ init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts)
         tab = Tab,
         interval = Interval,
         algorithm = maps:get(algorithm, Opts, undefined),
-        window = maps:get(window, Opts, undefined)
+        window = maps:get(window, Opts, undefined),
+        owner_monitor = owner_monitor(Opts)
     }}.
 
 handle_call(Request, _From, State) ->
@@ -94,6 +98,8 @@ handle_info(gossip, #state{interval = Interval} = State) ->
     broadcast_state(State),
     schedule_gossip(Interval),
     {noreply, State};
+handle_info({'DOWN', Monitor, process, _Owner, _Reason}, #state{owner_monitor = Monitor} = State) ->
+    {stop, normal, State};
 handle_info(Message, State) ->
     ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
@@ -109,6 +115,11 @@ terminate(Reason, #state{scope = Scope, group = Group}) ->
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
+
+%% The table belongs to the process that started the backend. When that
+%% process is gone the table is gone, and there is nothing left to gossip.
+owner_monitor(#{owner := Owner}) when is_pid(Owner) -> monitor(process, Owner);
+owner_monitor(#{}) -> undefined.
 
 schedule_gossip(Interval) ->
     erlang:send_after(Interval, self(), gossip).
