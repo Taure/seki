@@ -8,7 +8,9 @@ Merges received state using algorithm-aware strategies (max counts for sliding
 windows, lower tokens for token buckets, higher TAT for GCRA).
 
 The scope of the group is started if it is not running, and the group is
-joined again when the scope is restarted. Started with an `owner`, the process
+joined again when the scope is restarted. A scope that was already running
+belongs to whoever started it: when it stops, the process waits for it to be
+started again and does not start it itself. Started with an `owner`, the process
 stops when that process exits.
 
 Used internally by `seki_backend_pg`.
@@ -44,7 +46,8 @@ Used internally by `seki_backend_pg`.
     algorithm :: seki:algorithm() | undefined,
     window :: pos_integer() | undefined,
     scope_monitor :: reference() | undefined,
-    owner_monitor :: reference() | undefined
+    owner_monitor :: reference() | undefined,
+    own_scope :: boolean()
 }).
 
 %%----------------------------------------------------------------------
@@ -62,7 +65,7 @@ stop(Pid) ->
 %%----------------------------------------------------------------------
 
 init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts) ->
-    case join(Scope, Group) of
+    case join(Scope, Group, true) of
         {ok, ScopeMonitor} ->
             ?LOG_INFO(
                 #{
@@ -82,7 +85,8 @@ init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts)
                 algorithm = maps:get(algorithm, Opts, undefined),
                 window = maps:get(window, Opts, undefined),
                 scope_monitor = ScopeMonitor,
-                owner_monitor = owner_monitor(Opts)
+                owner_monitor = owner_monitor(Opts),
+                own_scope = own_scope(Scope)
             }};
         no_scope ->
             {stop, {no_scope, Scope}}
@@ -107,7 +111,17 @@ handle_info(gossip, #state{interval = Interval} = State) ->
     broadcast_state(State),
     schedule_gossip(Interval),
     {noreply, State};
-handle_info({'DOWN', Monitor, process, _Scope, _Reason}, #state{scope_monitor = Monitor} = State) ->
+handle_info({'DOWN', Monitor, process, _Scope, Reason}, #state{scope_monitor = Monitor} = State) ->
+    ?LOG_WARNING(
+        #{
+            msg => gossip_scope_down,
+            scope => State#state.scope,
+            group => seki_name:label(State#state.group),
+            restarted_by_seki => State#state.own_scope,
+            reason => Reason
+        },
+        #{domain => [seki]}
+    ),
     {noreply, rejoined(State)};
 handle_info(rejoin, #state{scope_monitor = undefined} = State) ->
     {noreply, rejoined(State)};
@@ -135,8 +149,12 @@ terminate(Reason, #state{scope = Scope, group = Group}) ->
 %% The scope is watched from before the group is joined, so a scope that goes
 %% at any time after is noticed. A scope that is restarted has forgotten its
 %% members, and the group is joined again.
-join(Scope, Group) ->
-    case seki_scope_sup:ensure(Scope) of
+%%
+%% Only a scope seki holds is started here. A scope the application started
+%% is restarted by its own supervisor: starting it here would take its name,
+%% and the application's start of it would fail.
+join(Scope, Group, Own) ->
+    case scope(Scope, Own) of
         ok ->
             Monitor = monitor(process, Scope),
             try pg:join(Scope, Group, self()) of
@@ -150,10 +168,18 @@ join(Scope, Group) ->
             no_scope
     end.
 
-rejoined(#state{scope = Scope, group = Group} = State) ->
-    case join(Scope, Group) of
+scope(Scope, true) -> seki_scope_sup:ensure(Scope);
+scope(Scope, false) -> seki_scope_sup:running(Scope).
+
+%% Without the application nothing holds a scope, and the one this process
+%% started is its own to start again.
+own_scope(Scope) ->
+    seki_scope_sup:held(Scope) orelse whereis(seki_sup) =:= undefined.
+
+rejoined(#state{scope = Scope, group = Group, own_scope = Own} = State) ->
+    case join(Scope, Group, Own) of
         {ok, Monitor} ->
-            State#state{scope_monitor = Monitor};
+            State#state{scope_monitor = Monitor, own_scope = own_scope(Scope)};
         no_scope ->
             _ = erlang:send_after(?REJOIN_PAUSE, self(), rejoin),
             State#state{scope_monitor = undefined}

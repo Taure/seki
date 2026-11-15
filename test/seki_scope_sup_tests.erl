@@ -1,6 +1,10 @@
 -module(seki_scope_sup_tests).
 
+-behaviour(supervisor).
+
 -include_lib("eunit/include/eunit.hrl").
+
+-export([init/1]).
 
 scope_test_() ->
     {foreach,
@@ -12,13 +16,18 @@ scope_test_() ->
             fun seki_starts_the_scope_it_uses/0,
             fun a_scope_that_is_running_is_used_as_it_is/0,
             fun a_scope_of_either_release_is_one/0,
+            fun a_process_started_like_a_scope_without_its_table_is_refused/0,
+            fun a_scope_that_is_still_starting_is_waited_for/0,
             fun a_name_registered_for_something_else_is_refused/0,
             fun gossip_joins_again_when_its_scope_is_restarted/0,
             fun callers_starting_a_scope_at_once_share_it/0,
             fun a_name_taken_while_its_scope_starts_is_refused/0,
             fun nothing_starts_outside_the_tree_while_the_supervisor_is_down/0,
             fun a_scope_crash_loop_costs_no_limiter/0,
-            fun gossip_waits_for_a_scope_whose_name_is_taken/0
+            fun gossip_waits_for_a_scope_whose_name_is_taken/0,
+            fun a_scope_of_the_application_is_left_to_its_supervisor/0,
+            fun a_scope_of_the_application_that_is_killed_is_left_to_its_supervisor/0,
+            fun a_scope_seki_holds_is_one_it_starts_again/0
         ]}.
 
 without_seki_a_scope_is_started_unsupervised_test() ->
@@ -68,28 +77,107 @@ a_scope_that_is_running_is_used_as_it_is() ->
     end.
 
 %% `pg` runs a scope as itself up to OTP 28 and as a `data_publisher` from
-%% OTP 29. A process started as either is a scope, on whichever release the
-%% test runs.
+%% OTP 29. A process started as either, holding the table a scope is named
+%% by, is a scope on whichever release the test runs.
 a_scope_of_either_release_is_one() ->
     [
         begin
-            Self = self(),
-            Scope = spawn(fun() ->
-                put('$initial_call', StartedAs),
-                Self ! {started, self()},
-                receive
-                    stop -> ok
-                end
-            end),
-            receive
-                {started, Scope} -> ok
-            end,
-            true = register(seki_scope_sup_tests_release, Scope),
+            Scope = started_as(StartedAs, [table]),
             ?assertEqual(ok, seki_scope_sup:ensure(seki_scope_sup_tests_release)),
+            ?assertEqual(ok, seki_scope_sup:running(seki_scope_sup_tests_release)),
+            ?assertNot(seki_scope_sup:held(seki_scope_sup_tests_release)),
             ok = killed(Scope)
         end
      || StartedAs <:- [{pg, init, 1}, {data_publisher, init, 1}]
     ].
+
+%% Being started the way a scope is does not make a process one: a store
+%% that is a `data_publisher` of something else, or a process that only says
+%% so, has no table named after it.
+a_process_started_like_a_scope_without_its_table_is_refused() ->
+    Registry = whereis(seki_limiter_registry),
+    [
+        begin
+            NotAScope = started_as(StartedAs, []),
+            ?assertEqual({error, not_a_scope}, seki_scope_sup:ensure(seki_scope_sup_tests_release)),
+            ?assertEqual(
+                {error, {backend_failed, {invalid_option, scope}}},
+                seki:new_limiter(refused, opts(#{scope => seki_scope_sup_tests_release}))
+            ),
+            ok = killed(NotAScope)
+        end
+     || StartedAs <:- [{pg, init, 1}, {data_publisher, init, 1}]
+    ],
+    Other = spawn(fun() ->
+        _ = ets:new(seki_scope_sup_tests_release, [named_table]),
+        receive
+            stop -> ok
+        end
+    end),
+    Fake = started_as({pg, init, 1}, []),
+    ok = until(fun() -> ets:info(seki_scope_sup_tests_release, owner) =:= Other end),
+    ?assertEqual({error, not_a_scope}, seki_scope_sup:ensure(seki_scope_sup_tests_release)),
+    ok = killed(Fake),
+    ok = killed(Other),
+    ?assertEqual(ok, seki:new_limiter(plain, maps:without([backend, backend_opts], opts(#{})))),
+    ?assertEqual(Registry, whereis(seki_limiter_registry)),
+    ?assertEqual([], supervisor:which_children(seki_scope_sup)).
+
+%% A scope that has registered its name and not yet made its table is still
+%% starting, and is waited for.
+a_scope_that_is_still_starting_is_waited_for() ->
+    Self = self(),
+    Scope = spawn(fun() ->
+        put('$initial_call', {pg, init, 1}),
+        true = register(seki_scope_sup_tests_release, self()),
+        Self ! {registered, self()},
+        receive
+            make_table -> ok
+        end,
+        _ = ets:new(seki_scope_sup_tests_release, [named_table]),
+        receive
+            stop -> ok
+        end
+    end),
+    receive
+        {registered, Scope} -> ok
+    end,
+    Caller = spawn_link(fun() ->
+        Self ! {ensured, self(), seki_scope_sup:ensure(seki_scope_sup_tests_release)}
+    end),
+    ok = until(fun() -> process_info(Caller, status) =:= {status, waiting} end),
+    Scope ! make_table,
+    ?assertEqual(
+        ok,
+        receive
+            {ensured, Caller, Result} -> Result
+        end
+    ),
+    ok = killed(Scope).
+
+started_as(StartedAs, Holding) ->
+    Self = self(),
+    Process = spawn(fun() ->
+        put('$initial_call', StartedAs),
+        _ = [ets:new(seki_scope_sup_tests_release, [named_table]) || table <:- Holding],
+        true = register(seki_scope_sup_tests_release, self()),
+        Self ! {started, self()},
+        receive
+            stop -> ok
+        end
+    end),
+    receive
+        {started, Process} -> Process
+    end.
+
+until(Condition) ->
+    case Condition() of
+        true ->
+            ok;
+        false ->
+            erlang:yield(),
+            until(Condition)
+    end.
 
 a_name_registered_for_something_else_is_refused() ->
     Registry = whereis(seki_limiter_registry),
@@ -273,8 +361,104 @@ gossip_waits_for_a_scope_whose_name_is_taken() ->
         ok = gen_server:stop(Second)
     end.
 
+%% The application holds the scope under a supervisor of its own. When the
+%% scope is stopped, seki leaves the name free, so the supervisor can start
+%% the scope again, and the gossip process joins the new one.
+a_scope_of_the_application_is_left_to_its_supervisor() ->
+    Scope = seki_scope_sup_tests_theirs,
+    Supervisor = application_supervisor(Scope),
+    try
+        ok = seki:new_limiter(theirs, opts(#{scope => Scope, gossip_interval => 3600000})),
+        {gcra, seki_backend_pg, State, _Config} = seki_limiter_registry:lookup(theirs),
+        Gossip = gossip(State),
+        ?assertNot(seki_scope_sup:held(Scope)),
+        ?assertNot(own_scope(sys:get_state(Gossip))),
+        ok = supervisor:terminate_child(Supervisor, Scope),
+        ?assertEqual(undefined, scope_monitor(sys:get_state(Gossip))),
+        receive
+        after 250 -> ok
+        end,
+        ?assertEqual(undefined, whereis(Scope)),
+        ?assertEqual([], supervisor:which_children(seki_scope_sup)),
+        ?assertMatch({allow, _}, seki:check(theirs, user)),
+        ?assertMatch({ok, _Restarted}, supervisor:restart_child(Supervisor, Scope)),
+        ok = member_again(Scope, {seki_limiter, theirs}, Gossip),
+        ?assertNot(own_scope(sys:get_state(Gossip))),
+        ?assertEqual([], supervisor:which_children(seki_scope_sup)),
+        ?assertEqual(ok, seki:delete_limiter(theirs))
+    after
+        stopped(Supervisor)
+    end.
+
+%% Killed with many limiters on it, the scope is started again by the
+%% supervisor that holds it and by nothing else, however many gossip
+%% processes saw it go.
+a_scope_of_the_application_that_is_killed_is_left_to_its_supervisor() ->
+    Scope = seki_scope_sup_tests_theirs,
+    Supervisor = application_supervisor(Scope),
+    Names = [{theirs, N} || N <:- lists:seq(1, 25)],
+    try
+        [
+            ok = seki:new_limiter(Name, opts(#{scope => Scope, gossip_interval => 3600000}))
+         || Name <:- Names
+        ],
+        [
+            begin
+                Running = running(Scope),
+                ok = killed(Running),
+                Restarted = restarted(Scope, Running),
+                ?assertEqual(
+                    [{Scope, Restarted, worker, [pg]}], supervisor:which_children(Supervisor)
+                )
+            end
+         || _ <:- lists:seq(1, 5)
+        ],
+        ?assertEqual([], supervisor:which_children(seki_scope_sup)),
+        [
+            begin
+                {gcra, seki_backend_pg, State, _Config} = seki_limiter_registry:lookup(Name),
+                ok = member_again(Scope, {seki_limiter, Name}, gossip(State))
+            end
+         || Name <:- Names
+        ],
+        [?assertEqual(ok, seki:delete_limiter(Name)) || Name <:- Names]
+    after
+        stopped(Supervisor)
+    end.
+
+a_scope_seki_holds_is_one_it_starts_again() ->
+    ok = seki:new_limiter(ours, opts(#{gossip_interval => 3600000})),
+    {gcra, seki_backend_pg, State, _Config} = seki_limiter_registry:lookup(ours),
+    ?assert(seki_scope_sup:held(seki_pg)),
+    ?assertEqual(ok, seki_scope_sup:running(seki_pg)),
+    ?assert(own_scope(sys:get_state(gossip(State)))),
+    ?assertNot(seki_scope_sup:held(seki_scope_sup_tests_theirs)),
+    ?assertEqual({error, not_a_scope}, seki_scope_sup:running(seki_scope_sup_tests_theirs)),
+    ?assertEqual(undefined, whereis(seki_scope_sup_tests_theirs)).
+
+application_supervisor(Scope) ->
+    {ok, Supervisor} = supervisor:start_link(?MODULE, [Scope]),
+    Supervisor.
+
+stopped(Supervisor) ->
+    true = unlink(Supervisor),
+    Monitor = monitor(process, Supervisor),
+    exit(Supervisor, shutdown),
+    receive
+        {'DOWN', Monitor, process, Supervisor, _Reason} -> ok
+    end.
+
+init([Scope]) ->
+    {ok,
+        {#{strategy => one_for_one, intensity => 100, period => 1}, [
+            #{id => Scope, start => {pg, start_link, [Scope]}}
+        ]}}.
+
 -spec scope_monitor(term()) -> term().
 scope_monitor(State) when is_tuple(State) -> element(8, State).
+
+-spec own_scope(term()) -> term().
+own_scope(State) when is_tuple(State) -> element(10, State).
 
 %% The gossip process answers in turn, so asking it again is how to wait for
 %% it to have heard of its scope. Its state changes when it has joined again.
