@@ -136,6 +136,7 @@ start(Scope, Opts) ->
         group => Group,
         tab => Tab,
         owner => self(),
+        own_scope => seki_scope_sup:own(Scope),
         interval => GossipInterval,
         algorithm => maps:get(algorithm, Limiter, undefined),
         window => maps:get(window, Limiter, undefined)

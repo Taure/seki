@@ -64,8 +64,23 @@ stop(Pid) ->
 %% gen_server callbacks
 %%----------------------------------------------------------------------
 
+%% Whose scope it is was settled when the limiter was made, and comes with
+%% the arguments, so a gossip process that is started again while a scope of
+%% the application is down does not start that scope: it waits for it.
 init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts) ->
-    case join(Scope, Group, true) of
+    Own = maps:get(own_scope, Opts, true),
+    State = #state{
+        scope = Scope,
+        group = Group,
+        tab = Tab,
+        interval = Interval,
+        algorithm = maps:get(algorithm, Opts, undefined),
+        window = maps:get(window, Opts, undefined),
+        scope_monitor = undefined,
+        owner_monitor = undefined,
+        own_scope = Own
+    },
+    case join(Scope, Group, Own) of
         {ok, ScopeMonitor} ->
             ?LOG_INFO(
                 #{
@@ -77,19 +92,26 @@ init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts)
                 #{domain => [seki]}
             ),
             schedule_gossip(Interval),
-            {ok, #state{
-                scope = Scope,
-                group = Group,
-                tab = Tab,
-                interval = Interval,
-                algorithm = maps:get(algorithm, Opts, undefined),
-                window = maps:get(window, Opts, undefined),
+            {ok, State#state{
                 scope_monitor = ScopeMonitor,
                 owner_monitor = owner_monitor(Opts),
-                own_scope = own_scope(Scope)
+                own_scope = seki_scope_sup:own(Scope)
             }};
+        no_scope when Own ->
+            {stop, {no_scope, Scope}};
         no_scope ->
-            {stop, {no_scope, Scope}}
+            ?LOG_WARNING(
+                #{
+                    msg => gossip_scope_down,
+                    scope => Scope,
+                    group => seki_name:label(Group),
+                    restarted_by_seki => false,
+                    reason => not_running
+                },
+                #{domain => [seki]}
+            ),
+            schedule_gossip(Interval),
+            {ok, rejoined(State#state{owner_monitor = owner_monitor(Opts)})}
     end.
 
 handle_call(Request, _From, State) ->
@@ -171,15 +193,10 @@ join(Scope, Group, Own) ->
 scope(Scope, true) -> seki_scope_sup:ensure(Scope);
 scope(Scope, false) -> seki_scope_sup:running(Scope).
 
-%% Without the application nothing holds a scope, and the one this process
-%% started is its own to start again.
-own_scope(Scope) ->
-    seki_scope_sup:held(Scope) orelse whereis(seki_sup) =:= undefined.
-
 rejoined(#state{scope = Scope, group = Group, own_scope = Own} = State) ->
     case join(Scope, Group, Own) of
         {ok, Monitor} ->
-            State#state{scope_monitor = Monitor, own_scope = own_scope(Scope)};
+            State#state{scope_monitor = Monitor, own_scope = seki_scope_sup:own(Scope)};
         no_scope ->
             _ = erlang:send_after(?REJOIN_PAUSE, self(), rejoin),
             State#state{scope_monitor = undefined}

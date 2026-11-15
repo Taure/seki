@@ -27,7 +27,8 @@ scope_test_() ->
             fun gossip_waits_for_a_scope_whose_name_is_taken/0,
             fun a_scope_of_the_application_is_left_to_its_supervisor/0,
             fun a_scope_of_the_application_that_is_killed_is_left_to_its_supervisor/0,
-            fun a_scope_seki_holds_is_one_it_starts_again/0
+            fun a_scope_seki_holds_is_one_it_starts_again/0,
+            fun gossip_started_again_leaves_a_scope_of_the_application_down/0
         ]}.
 
 without_seki_a_scope_is_started_unsupervised_test() ->
@@ -435,6 +436,47 @@ a_scope_seki_holds_is_one_it_starts_again() ->
     ?assertNot(seki_scope_sup:held(seki_scope_sup_tests_theirs)),
     ?assertEqual({error, not_a_scope}, seki_scope_sup:running(seki_scope_sup_tests_theirs)),
     ?assertEqual(undefined, whereis(seki_scope_sup_tests_theirs)).
+
+%% The gossip process dies while the scope of the application is stopped.
+%% Started again, it still knows the scope is not seki's and waits for it.
+gossip_started_again_leaves_a_scope_of_the_application_down() ->
+    Scope = seki_scope_sup_tests_theirs,
+    Supervisor = application_supervisor(Scope),
+    try
+        ok = seki:new_limiter(theirs, opts(#{scope => Scope, gossip_interval => 3600000})),
+        {gcra, seki_backend_pg, State, _Config} = seki_limiter_registry:lookup(theirs),
+        Gossip = gossip(State),
+        ok = supervisor:terminate_child(Supervisor, Scope),
+        ok = killed(Gossip),
+        Restarted = gossip_again(Gossip),
+        ?assertEqual(undefined, scope_monitor(sys:get_state(Restarted))),
+        ?assertNot(own_scope(sys:get_state(Restarted))),
+        ?assertEqual(undefined, whereis(Scope)),
+        ?assertEqual([], supervisor:which_children(seki_scope_sup)),
+        ?assertMatch({ok, _Scope}, supervisor:restart_child(Supervisor, Scope)),
+        ok = member_again(Scope, {seki_limiter, theirs}, Restarted),
+        ?assertMatch({allow, _}, seki:check(theirs, user)),
+        ?assertEqual(ok, seki:delete_limiter(theirs))
+    after
+        stopped(Supervisor)
+    end.
+
+gossip_again(Old) ->
+    Running = [
+        Pid
+     || {_Name, NameSup, _Type, _Modules} <:- supervisor:which_children(seki_gossip_sup),
+        is_pid(NameSup),
+        {_Id, Pid, _ChildType, _ChildModules} <:- supervisor:which_children(NameSup),
+        is_pid(Pid),
+        Pid =/= Old
+    ],
+    case Running of
+        [Restarted] ->
+            Restarted;
+        [] ->
+            erlang:yield(),
+            gossip_again(Old)
+    end.
 
 application_supervisor(Scope) ->
     {ok, Supervisor} = supervisor:start_link(?MODULE, [Scope]),

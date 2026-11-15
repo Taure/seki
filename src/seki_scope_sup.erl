@@ -9,7 +9,7 @@
 %% anything else is refused: joining a group in it would wait for an answer
 %% that never comes.
 
--export([start_link/0, ensure/1, running/1, held/1]).
+-export([start_link/0, ensure/1, running/1, held/1, own/1]).
 -export([init/1]).
 
 -define(TABLE_WAIT, 5).
@@ -33,6 +33,12 @@ running(Scope) ->
 -spec held(atom()) -> boolean().
 held(Scope) ->
     is_pid(held_scope(Scope)).
+
+%% Without the application nothing holds a scope, and the one that was
+%% started for a limiter is the limiter's to start again.
+-spec own(atom()) -> boolean().
+own(Scope) ->
+    held(Scope) orelse whereis(seki_sup) =:= undefined.
 
 %% A start fails when the name was taken since it was looked up, by another
 %% caller starting the same scope or by something else, so whatever holds the
