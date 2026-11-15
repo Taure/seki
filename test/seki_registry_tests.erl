@@ -59,6 +59,8 @@ registry_test_() ->
             fun only_a_local_process_is_registered/0,
             fun an_unknown_message_leaves_the_registry_running/0,
             fun an_unexpected_message_is_dropped/0,
+            fun the_first_call_or_cast_dropped_is_logged/0,
+            fun a_registry_that_stays_down_is_tried_ten_times_five_ms_apart/0,
             fun a_breaker_is_named_by_a_term/0,
             fun a_bulkhead_is_named_by_a_term/0,
             fun a_load_shedder_is_named_by_a_term/0,
@@ -410,6 +412,68 @@ an_unexpected_message_is_dropped() ->
     Refusal = {error, unknown_request},
     ?assertEqual(ok, seki_unexpected_tests:dropped_by(seki_registry, seki_registry, Refusal)),
     ?assertEqual(self(), seki_registry:whereis_name(?NAME)).
+
+the_first_call_or_cast_dropped_is_logged() ->
+    [
+        begin
+            Registry = running(seki_registry),
+            stopped(Registry),
+            ?assertEqual(
+                [
+                    #{
+                        msg => unexpected_message_dropped,
+                        module => seki_registry,
+                        kind => Kind,
+                        message => stray
+                    }
+                ],
+                seki_unexpected_tests:first_dropped(restarted(seki_registry, Registry), Kind)
+            )
+        end
+     || Kind <:- [call, cast]
+    ].
+
+%% The pauses are read from a trace of the registering process, which says
+%% how many there were and how long each was asked to be, whatever the
+%% machine was doing.
+a_registry_that_stays_down_is_tried_ten_times_five_ms_apart() ->
+    Registry = running(seki_registry),
+    ok = sys:suspend(seki_registry_sup),
+    try
+        stopped(Registry),
+        {Registering, Monitor} = spawn_monitor(fun() ->
+            receive
+                register -> exit(seki_registry:register_name(?NAME, self()))
+            end
+        end),
+        1 = erlang:trace_pattern({timer, sleep, 1}, true, [global]),
+        1 = erlang:trace(Registering, true, [call]),
+        Registering ! register,
+        Reason =
+            receive
+                {'DOWN', Monitor, process, Registering, Exit} -> Exit
+            after 2000 ->
+                exit(Registering, kill),
+                still_registering
+            end,
+        Delivered = erlang:trace_delivered(Registering),
+        receive
+            {trace_delivered, Registering, Delivered} -> ok
+        end,
+        ?assertMatch({noproc, {gen_server, call, [seki_registry, {register, ?NAME, _}]}}, Reason),
+        ?assertEqual(lists:duplicate(9, 5), pauses(Registering))
+    after
+        _ = erlang:trace_pattern({timer, sleep, 1}, false, [global]),
+        ok = sys:resume(seki_registry_sup)
+    end,
+    _ = sys:get_state(restarted(seki_registry, Registry)),
+    ok.
+
+pauses(Registering) ->
+    receive
+        {trace, Registering, call, {timer, sleep, [Pause]}} -> [Pause | pauses(Registering)]
+    after 0 -> []
+    end.
 
 a_breaker_is_named_by_a_term() ->
     Name = {breaker, ~"orders", 1},

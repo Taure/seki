@@ -24,6 +24,10 @@ token_bucket_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"allows requests within limit", fun token_bucket_allow/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
+        {"the first call or cast the registry drops is logged",
+            fun first_call_or_cast_dropped_is_logged/0},
+        {"a backend without atomic updates is refused unless asked for",
+            fun non_atomic_backend_is_refused/0},
         {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"a backend that fails to start is refused", fun failing_backend_is_refused/0},
         {"a backend that fails later is outlived", fun failing_backend_is_outlived/0},
@@ -672,6 +676,54 @@ unexpected_messages_are_dropped() ->
     ),
     ?assertMatch({allow, _}, seki:check(lim_stray, user)),
     seki:delete_limiter(lim_stray).
+
+first_call_or_cast_dropped_is_logged() ->
+    [
+        begin
+            Registry = whereis(seki_limiter_registry),
+            true = is_pid(Registry),
+            Monitor = monitor(process, Registry),
+            exit(Registry, kill),
+            receive
+                {'DOWN', Monitor, process, Registry, killed} -> ok
+            end,
+            ?assertEqual(
+                [
+                    #{
+                        msg => unexpected_message_dropped,
+                        module => seki_limiter_registry,
+                        kind => Kind,
+                        message => stray
+                    }
+                ],
+                seki_unexpected_tests:first_dropped(registry_after(Registry), Kind)
+            )
+        end
+     || Kind <:- [call, cast]
+    ].
+
+-spec registry_after(pid()) -> pid().
+registry_after(Old) ->
+    case whereis(seki_limiter_registry) of
+        Registry when is_pid(Registry), Registry =/= Old ->
+            Registry;
+        _NotYet ->
+            erlang:yield(),
+            registry_after(Old)
+    end.
+
+non_atomic_backend_is_refused() ->
+    Opts = #{
+        algorithm => token_bucket, limit => 1, window => 1000, backend => seki_nonatomic_backend
+    },
+    ?assertEqual(
+        {error, {backend_not_atomic, seki_nonatomic_backend}}, seki:new_limiter(lim_plain, Opts)
+    ),
+    ?assertError({limiter_not_found, lim_plain}, seki:check(lim_plain, user)),
+    ?assertEqual(ok, seki:new_limiter(lim_plain, Opts#{allow_non_atomic => true})),
+    ?assertMatch({allow, _}, seki:check(lim_plain, user)),
+    ?assertMatch({deny, _}, seki:check(lim_plain, user)),
+    seki:delete_limiter(lim_plain).
 
 invalid_options_are_refused() ->
     Kept = kept_limiter(lim_kept_invalid),

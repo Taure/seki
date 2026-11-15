@@ -9,6 +9,8 @@ worker_test_() ->
         fun(_) -> application:stop(seki) end, [
             {"one worker per scheduler", fun workers_started/0},
             {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
+            {"the first call or cast a worker drops is logged",
+                fun first_call_or_cast_dropped_is_logged/0},
             {"no worker has a registered name", fun workers_have_no_name/0},
             {"contended key runs on its worker", fun contended_key_runs_on_worker/0},
             {"errors in a step reach the caller", fun step_error_reaches_caller/0},
@@ -18,8 +20,25 @@ worker_test_() ->
             {"an unpublished worker count falls back to a local loop",
                 fun unpublished_count_falls_back/0},
             {timeout, 30, {"a step past its deadline is not run", fun expired_step_is_not_run/0}},
+            {"a worker is given one second for a step", fun worker_is_given_one_second/0},
+            {"a worker count that is no positive integer falls back to a local loop",
+                fun unusable_count_falls_back/0},
+            {"a worker that was never published falls back to a local loop",
+                fun unpublished_worker_falls_back/0},
             {"unknown calls are refused", fun unknown_request_refused/0}
         ]}.
+
+the_worker_count_is_published_when_seki_starts_test() ->
+    _ = application:stop(seki),
+    _ = persistent_term:erase({seki_ets_worker, count}),
+    {ok, _} = application:ensure_all_started(seki),
+    try
+        ?assertEqual(
+            erlang:system_info(schedulers_online), persistent_term:get({seki_ets_worker, count})
+        )
+    after
+        ok = application:stop(seki)
+    end.
 
 unknown_request_refused() ->
     [Worker | _] = workers(),
@@ -139,6 +158,82 @@ expired_step_is_not_run() ->
     ?assertEqual({error, contention}, Result),
     ?assertEqual(Interfering, ets:lookup(Tab, key)).
 
+%% A process standing in for the worker of a key answers with the deadline
+%% it was sent, which is the moment the call to it is given up.
+worker_is_given_one_second() ->
+    Tab = ets:new(?MODULE, [set, public]),
+    {worker, Worker} = seki_ets_worker:route(Tab, key),
+    StandIn = spawn_link(fun answer_with_deadline/0),
+    ok = persistent_term:put(published_as(Tab, key), StandIn),
+    try
+        ?assertEqual({worker, StandIn}, seki_ets_worker:route(Tab, key)),
+        ?assertEqual(1000, allowed(Tab))
+    after
+        ok = persistent_term:put(published_as(Tab, key), Worker),
+        StandIn ! stop
+    end.
+
+answer_with_deadline() ->
+    receive
+        {'$gen_call', From, {atomic_update, Deadline, _Tab, _Key, _Step}} ->
+            gen_server:reply(From, {ok, Deadline}),
+            answer_with_deadline();
+        stop ->
+            ok
+    end.
+
+%% Read only when the call began and ended in the same millisecond, so the
+%% deadline is that millisecond plus what the worker is allowed.
+allowed(Tab) ->
+    Before = erlang:monotonic_time(millisecond),
+    {ok, Deadline} = seki_ets_worker:atomic_update(Tab, key, {?MODULE, conflict_once_step, []}),
+    case erlang:monotonic_time(millisecond) of
+        Before -> Deadline - Before;
+        _Later -> allowed(Tab)
+    end.
+
+unusable_count_falls_back() ->
+    {Tab, Counter} = setup_conflict(),
+    Count = persistent_term:get({seki_ets_worker, count}),
+    try
+        [
+            begin
+                ok = persistent_term:put({seki_ets_worker, count}, Unusable),
+                ?assertEqual(local, seki_ets_worker:route(Tab, key))
+            end
+         || Unusable <:- [0, -1, 1.0, many]
+        ],
+        ok = persistent_term:put({seki_ets_worker, count}, 1),
+        ?assertEqual(
+            {worker, persistent_term:get({seki_ets_worker, 1})}, seki_ets_worker:route(Tab, key)
+        ),
+        ok = persistent_term:put({seki_ets_worker, count}, 0),
+        {ok, Pid} = seki_ets:atomic_update(
+            Tab, key, {?MODULE, conflict_once_step, [Tab, key, Counter]}
+        ),
+        ?assertEqual(self(), Pid)
+    after
+        ok = persistent_term:put({seki_ets_worker, count}, Count)
+    end.
+
+unpublished_worker_falls_back() ->
+    {Tab, Counter} = setup_conflict(),
+    {worker, Worker} = seki_ets_worker:route(Tab, key),
+    true = persistent_term:erase(published_as(Tab, key)),
+    try
+        ?assertEqual(local, seki_ets_worker:route(Tab, key)),
+        {ok, Pid} = seki_ets:atomic_update(
+            Tab, key, {?MODULE, conflict_once_step, [Tab, key, Counter]}
+        ),
+        ?assertEqual(self(), Pid)
+    after
+        ok = persistent_term:put(published_as(Tab, key), Worker)
+    end.
+
+published_as(Tab, Key) ->
+    Count = persistent_term:get({seki_ets_worker, count}),
+    {seki_ets_worker, erlang:phash2({Tab, Key}, Count) + 1}.
+
 -spec workers() -> [pid()].
 workers() ->
     [Worker || Child <:- supervisor:which_children(seki_sup), Worker <:- worker(Child)].
@@ -189,6 +284,27 @@ conflict_then_crash_step(Current, Tab, Key, Counter) ->
         0 -> conflict_once_step(Current, Tab, Key, Counter);
         _ -> error(boom)
     end.
+
+first_call_or_cast_dropped_is_logged() ->
+    Tab = ets:new(?MODULE, [set, public]),
+    [
+        begin
+            {worker, Worker} = seki_ets_worker:route(Tab, key),
+            ok = stopped(Worker),
+            ?assertEqual(
+                [
+                    #{
+                        msg => unexpected_message_dropped,
+                        module => seki_ets_worker,
+                        kind => Kind,
+                        message => stray
+                    }
+                ],
+                seki_unexpected_tests:first_dropped(rerouted(Tab, key, Worker), Kind)
+            )
+        end
+     || Kind <:- [call, cast]
+    ].
 
 unexpected_messages_are_dropped() ->
     [Worker | _] = workers(),

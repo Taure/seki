@@ -2,7 +2,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--export([dropped_by/3, dropped_by/2, log/2]).
+-export([dropped_by/3, dropped_by/2, first_dropped/2, log/2]).
 
 -define(HANDLER, seki_unexpected_tests).
 
@@ -33,6 +33,24 @@ dropped_by(Server, Refusal) ->
     after
         ok = logger:remove_handler(?HANDLER)
     end.
+
+%% What a process that has dropped nothing yet logs for a call or a cast.
+-spec first_dropped(pid(), call | cast) -> [map()].
+first_dropped(Server, Kind) ->
+    ok = logger:add_handler(?HANDLER, ?MODULE, #{level => warning, config => #{pid => self()}}),
+    try
+        ok = stray(Server, Kind),
+        _ = sys:get_state(Server),
+        logged_by(Server)
+    after
+        ok = logger:remove_handler(?HANDLER)
+    end.
+
+stray(Server, call) ->
+    _ = gen_server:call(Server, {stray, call}),
+    ok;
+stray(Server, cast) ->
+    gen_server:cast(Server, {stray, cast}).
 
 -spec running(term()) -> pid().
 running(Server) when is_pid(Server) -> Server.
