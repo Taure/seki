@@ -23,6 +23,8 @@ registry_test_() ->
             fun a_name_that_outlived_the_table_is_taken_until_it_is_deleted/0,
             fun a_call_while_the_table_is_lost_reaches_its_process_or_exits/0,
             fun a_process_gone_with_the_table_restarts_under_its_name/0,
+            fun a_named_process_waits_for_a_restarting_registry/0,
+            fun a_named_process_gives_up_on_a_registry_that_stays_down/0,
             fun only_the_registry_writes_the_table/0,
             fun only_the_registry_is_given_the_table/0,
             fun the_registry_restarts_over_any_row/0,
@@ -242,6 +244,49 @@ a_process_gone_with_the_table_restarts_under_its_name() ->
     ),
     ?assertEqual({ok, done}, seki_bulkhead:call({bulkhead, gone}, fun() -> done end)),
     {ok, _} = seki:new_shed({shed, deleted}, #{}).
+
+a_named_process_waits_for_a_restarting_registry() ->
+    {ok, First} = seki:new_bulkhead({bulkhead, waits}, #{max_concurrent => 1}),
+    Supervisor = whereis(seki_process_sup),
+    Registry = running(seki_registry),
+    ok = sys:suspend(seki_registry_sup),
+    try
+        stopped(Registry),
+        stopped(First),
+        Self = self(),
+        spawn_link(fun() -> Self ! {started, seki:new_breaker({breaker, waits}, #{})} end),
+        timer:sleep(20),
+        ?assertEqual(undefined, whereis(seki_registry))
+    after
+        ok = sys:resume(seki_registry_sup)
+    end,
+    Second = restarted({bulkhead, waits}, First),
+    ?assertEqual(Supervisor, whereis(seki_process_sup)),
+    ?assertEqual({ok, done}, seki_bulkhead:call({bulkhead, waits}, fun() -> done end)),
+    Started =
+        receive
+            {started, Result} -> Result
+        after 5000 -> not_started
+        end,
+    ?assertMatch({ok, _}, Started),
+    ?assertEqual(element(2, Started), seki_registry:whereis_name({breaker, waits})),
+    ?assertEqual(Second, seki_registry:whereis_name({bulkhead, waits})).
+
+a_named_process_gives_up_on_a_registry_that_stays_down() ->
+    Registry = running(seki_registry),
+    ok = sys:suspend(seki_registry_sup),
+    try
+        stopped(Registry),
+        {Elapsed, Result} = timer:tc(fun() -> seki:new_breaker({breaker, gives_up}, #{}) end),
+        ?assertMatch({error, {{noproc, _}, _}}, Result),
+        ?assert(Elapsed >= 45_000),
+        ?assert(Elapsed < 2_000_000)
+    after
+        ok = sys:resume(seki_registry_sup)
+    end,
+    _ = sys:get_state(restarted(seki_registry, Registry)),
+    ?assertEqual([], supervisor:which_children(seki_breaker_sup)),
+    ?assertMatch({ok, _}, seki:new_breaker({breaker, gives_up}, #{})).
 
 only_the_registry_writes_the_table() ->
     {ok, Breaker} = seki:new_breaker(?NAME, #{}),

@@ -205,7 +205,10 @@ that are still running, which takes well under a millisecond on an idle node.
 In between, a call to a name that is not an atom exits with `{noproc, _}` and a
 cast does nothing, as for an unknown name. The processes keep running, and
 each is reached by its name again with the state it had: an open breaker is
-still open. Names that are atoms are not affected.
+still open. Names that are atoms are not affected. A process that is created
+or restarted under such a name while the registry is restarting waits for it,
+for 50 ms at most; after that `seki:new_breaker/2` and the other `new_*`
+functions return `{error, {{noproc, _}, _}}`.
 
 None of these is in the return types. A catch-all around such a call
 (`catch _:_ -> allow`, or a bare `rescue` in Elixir) turns every one of them

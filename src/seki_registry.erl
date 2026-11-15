@@ -12,6 +12,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(TAB, seki_registry).
+-define(REGISTER_ATTEMPTS, 10).
+-define(REGISTER_PAUSE, 5).
 
 -type via() :: {via, ?MODULE, seki:name()}.
 -type names() :: #{reference() => seki:name()}.
@@ -43,11 +45,23 @@ named_children(Supervisor) ->
         exit:_NotRunning -> []
     end.
 
+%% Called by a process that is starting under its supervisor. A start that
+%% fails is tried again at once and uses up the supervisor's restarts, so
+%% while the registry is restarting the process waits for it, for 50 ms at
+%% most.
 -spec register_name(seki:name(), pid()) -> yes | no.
 register_name(Name, Pid) when is_pid(Pid), node(Pid) =:= node() ->
-    case gen_server:call(?MODULE, {register, Name, Pid}) of
+    register_name(Name, Pid, ?REGISTER_ATTEMPTS).
+
+-spec register_name(seki:name(), pid(), pos_integer()) -> yes | no.
+register_name(Name, Pid, Attempts) ->
+    try gen_server:call(?MODULE, {register, Name, Pid}) of
         yes -> yes;
         _Taken -> no
+    catch
+        exit:{Reason, _Call} when Reason =/= timeout, Attempts > 1 ->
+            timer:sleep(?REGISTER_PAUSE),
+            register_name(Name, Pid, Attempts - 1)
     end.
 
 -spec unregister_name(seki:name()) -> ok.
