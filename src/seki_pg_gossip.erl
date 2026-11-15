@@ -80,18 +80,11 @@ handle_call(Request, _From, State) ->
     {reply, {error, unknown}, State}.
 
 handle_cast(
-    {seki_gossip, ?GOSSIP_VERSION, Algorithm, Entries},
-    #state{tab = Tab, algorithm = Algorithm, window = Window} = State
-) when is_list(Entries) ->
-    Now = erlang:monotonic_time(millisecond),
-    merge_entries(
-        Tab,
-        [
-            {Key, Value}
-         || {Key, Encoded} <- Entries, {ok, Value} <- [decode(Algorithm, Encoded, Now)]
-        ],
-        Window
-    ),
+    {seki_gossip, ?GOSSIP_VERSION, Algorithm, Entries}, #state{algorithm = Algorithm} = State
+) when
+    is_list(Entries)
+->
+    ok = merge_gossip(Entries, erlang:monotonic_time(millisecond), State),
     {noreply, State};
 handle_cast(Message, State) ->
     ok = seki_unexpected:dropped(?MODULE, cast, Message),
@@ -175,13 +168,30 @@ merge_entries_for_test(Tab, Entries) ->
 
 merge_entries(Tab, Entries, Window) ->
     lists:foreach(
-        fun({Key, RemoteValue}) ->
-            _ = seki_ets:atomic_update_stored(
-                Tab, Key, {?MODULE, merge_step, [RemoteValue, Window]}
-            )
-        end,
+        fun({Key, RemoteValue}) -> merge_stored(Tab, Key, RemoteValue, Window) end,
         Entries
     ).
+
+%% Gossip is whatever another node sent. An entry that is not a key seki could
+%% have stored, with a value in the limiter's shape, is passed over, and a
+%% tail that is not a list ends the entries.
+merge_gossip([Entry | Entries], Now, State) ->
+    ok = merge_entry(Entry, Now, State),
+    merge_gossip(Entries, Now, State);
+merge_gossip(_End, _Now, _State) ->
+    ok.
+
+merge_entry({Key, Encoded}, Now, #state{tab = Tab, algorithm = Algorithm, window = Window}) ->
+    case {seki_ets:is_literal(Key), decode(Algorithm, Encoded, Now)} of
+        {true, {ok, Value}} -> merge_stored(Tab, Key, Value, Window);
+        {_Literal, _Decoded} -> ok
+    end;
+merge_entry(_Entry, _Now, _State) ->
+    ok.
+
+merge_stored(Tab, Key, RemoteValue, Window) ->
+    _ = seki_ets:atomic_update_stored(Tab, Key, {?MODULE, merge_step, [RemoteValue, Window]}),
+    ok.
 
 -doc false.
 merge_step(not_found, RemoteValue, _Window) ->

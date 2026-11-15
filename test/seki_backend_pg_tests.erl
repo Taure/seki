@@ -66,6 +66,7 @@ gossip_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"gossip start and stop", fun gossip_start_stop/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
+        {"malformed gossip is dropped", fun malformed_gossip_is_dropped/0},
         {"gossip receives merge cast", fun gossip_merge_cast/0},
         {"gossip broadcasts to peers", fun gossip_broadcast/0}
     ]}.
@@ -398,3 +399,31 @@ unexpected_messages_are_dropped() ->
         ok, seki_unexpected_tests:dropped_by(Gossip, seki_pg_gossip, {error, unknown})
     ),
     seki:delete_limiter(pg_stray).
+
+malformed_gossip_is_dropped() ->
+    {Gossip, State} = gossip_limiter(pg_malformed, gcra),
+    Registry = whereis(seki_limiter_registry),
+    Tab = element(2, State),
+    [
+        gen_server:cast(Gossip, {seki_gossip, 2, gcra, parsed(Entries)})
+     || Entries <:- [
+            "[{improper, 100} | tail].",
+            "[not_an_entry, {after_a_stray, 100}].",
+            "[{'_', 100}, {'$1', 100}, {#{a => 1}, 100}, {{nested, ['$2']}, 100}].",
+            "[{'_', 200}, {after_a_pattern, 100}]."
+        ]
+    ],
+    _ = sys:get_state(Gossip),
+    ?assert(is_process_alive(Gossip)),
+    ?assertEqual(Registry, whereis(seki_limiter_registry)),
+    ?assertEqual(
+        [after_a_pattern, after_a_stray, improper],
+        lists:sort([Key || {Key, _TAT} <:- ets:tab2list(Tab)])
+    ),
+    seki:delete_limiter(pg_malformed).
+
+-spec parsed(string()) -> term().
+parsed(Text) ->
+    {ok, Tokens, _End} = erl_scan:string(Text),
+    {ok, Term} = erl_parse:parse_term(Tokens),
+    Term.

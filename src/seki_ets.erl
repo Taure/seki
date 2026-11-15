@@ -3,6 +3,7 @@
 
 -export([
     storage_key/1,
+    is_literal/1,
     lookup/2,
     insert/3,
     delete/2,
@@ -134,6 +135,7 @@ swap_spec(StorageKey, OldValue, NewValue) ->
 escape(Key) ->
     {seki_escaped_key, term_to_binary(Key, [deterministic])}.
 
+-spec is_literal(term()) -> boolean().
 is_literal('_') ->
     false;
 is_literal(Term) when is_atom(Term) ->
