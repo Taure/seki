@@ -654,3 +654,140 @@ options_at_their_limits() ->
 -spec option(atom(), term()) -> map().
 option(Key, Value) ->
     #{Key => Value}.
+
+%%----------------------------------------------------------------------
+%% A breaker that is restarted or created again
+%%----------------------------------------------------------------------
+
+restart_test_() ->
+    {setup, fun setup/0, fun cleanup/1, [
+        {"an open breaker is restarted open", fun restarts_open/0},
+        {"a restarted breaker waits out what was left", fun restarts_with_the_wait_left/0},
+        {"a breaker lost with its supervisor is created open", fun created_open_after_loss/0},
+        {"a deleted breaker is created closed", fun created_closed_after_delete/0},
+        {"a breaker that closed again is restarted closed", fun restarts_closed/0},
+        {"a breaker that opened again on a probe is restarted open", fun restarts_reopened/0}
+    ]}.
+
+restarts_open() ->
+    [
+        begin
+            First = tripped(Name, 60000),
+            Second = killed(Name, First),
+            ?assertEqual(open, seki:state(Name)),
+            ?assertEqual({error, circuit_open}, seki:call(Name, fun() -> ok end)),
+            ?assertEqual(Second, breaker(Name)),
+            seki:delete_breaker(Name)
+        end
+     || Name <:- [br_restart_open, {br_restart_open, ~"tenant"}]
+    ].
+
+restarts_with_the_wait_left() ->
+    First = tripped(br_restart_wait, 1000),
+    timer:sleep(700),
+    _ = killed(br_restart_wait, First),
+    ?assertEqual(open, seki:state(br_restart_wait)),
+    timer:sleep(600),
+    ?assertEqual(half_open, seki:state(br_restart_wait)),
+    _ = killed(br_restart_wait, whereis(br_restart_wait)),
+    ?assertEqual(half_open, seki:state(br_restart_wait)),
+    seki:delete_breaker(br_restart_wait).
+
+created_open_after_loss() ->
+    _ = tripped(br_lost, 60000),
+    {ok, _} = seki:new_breaker(br_lost_closed, #{}),
+    _ = killed(seki_breaker_sup, whereis(seki_breaker_sup)),
+    {ok, _} = created(br_lost, #{window_size => 5, wait_duration => 60000}),
+    {ok, _} = created(br_lost_closed, #{}),
+    ?assertEqual(open, seki:state(br_lost)),
+    ?assertEqual(closed, seki:state(br_lost_closed)),
+    seki:reset_breaker(br_lost),
+    ?assertEqual(closed, seki:state(br_lost)),
+    seki:delete_breaker(br_lost),
+    seki:delete_breaker(br_lost_closed).
+
+created_closed_after_delete() ->
+    _ = tripped(br_deleted, 60000),
+    ok = seki:delete_breaker(br_deleted),
+    {ok, _} = seki:new_breaker(br_deleted, #{}),
+    ?assertEqual(closed, seki:state(br_deleted)),
+    seki:delete_breaker(br_deleted).
+
+restarts_closed() ->
+    First = tripped(br_restart_reset, 60000),
+    seki:reset_breaker(br_restart_reset),
+    ?assertEqual(closed, seki:state(br_restart_reset)),
+    _ = killed(br_restart_reset, First),
+    ?assertEqual(closed, seki:state(br_restart_reset)),
+    seki:delete_breaker(br_restart_reset),
+    Probed = tripped(br_restart_probed, 20),
+    timer:sleep(60),
+    ?assertEqual(half_open, seki:state(br_restart_probed)),
+    {ok, ok} = seki:call(br_restart_probed, fun() -> ok end),
+    ?assertEqual(closed, seki:state(br_restart_probed)),
+    _ = killed(br_restart_probed, Probed),
+    ?assertEqual(closed, seki:state(br_restart_probed)),
+    seki:delete_breaker(br_restart_probed).
+
+restarts_reopened() ->
+    [
+        begin
+            First = tripped(Name, 60000),
+            ok = seki_breaker_trips:opened(Name, erlang:monotonic_time(millisecond)),
+            Second = killed(Name, First),
+            ?assertEqual(half_open, seki:state(Name)),
+            _ = seki:call(Name, Probe),
+            ?assertEqual(open, seki:state(Name)),
+            _ = killed(Name, Second),
+            ?assertEqual(open, seki:state(Name)),
+            seki:delete_breaker(Name)
+        end
+     || {Name, Probe} <:- [
+            {br_reopened_result, fun() -> {error, still_down} end},
+            {br_reopened_raise, fun() -> error(still_down) end}
+        ]
+    ].
+
+tripped(Name, WaitDuration) ->
+    {ok, Breaker} = seki:new_breaker(Name, #{
+        window_size => 5, half_open_requests => 1, wait_duration => WaitDuration
+    }),
+    lists:foreach(fun(_) -> seki:call(Name, fun() -> error end) end, lists:seq(1, 5)),
+    ?assertEqual(open, seki:state(Name)),
+    Breaker.
+
+killed(Name, Breaker) when is_pid(Breaker) ->
+    Monitor = monitor(process, Breaker),
+    exit(Breaker, kill),
+    receive
+        {'DOWN', Monitor, process, Breaker, killed} -> ok
+    end,
+    restarted(Name, Breaker, 200).
+
+restarted(Name, Former, Attempts) when Attempts > 0 ->
+    case breaker(Name) of
+        Pid when is_pid(Pid), Pid =/= Former ->
+            Pid;
+        _NotYet ->
+            timer:sleep(5),
+            restarted(Name, Former, Attempts - 1)
+    end.
+
+breaker(Name) when is_atom(Name) -> whereis(Name);
+breaker(Name) -> seki_registry:whereis_name(Name).
+
+created(Name, Opts) ->
+    created(Name, Opts, 200).
+
+created(Name, Opts, Attempts) when Attempts > 0 ->
+    try seki:new_breaker(Name, Opts) of
+        {ok, Breaker} ->
+            {ok, Breaker};
+        {error, _StillThere} ->
+            timer:sleep(5),
+            created(Name, Opts, Attempts - 1)
+    catch
+        exit:{noproc, _Call} ->
+            timer:sleep(5),
+            created(Name, Opts, Attempts - 1)
+    end.

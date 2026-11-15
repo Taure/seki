@@ -291,6 +291,13 @@ backend that cannot start, for example `seki_backend_pg` with
 each of these stopped the process that holds the limiters, and every limiter
 on the node was lost with it.
 
+A breaker that is restarted while open starts open, for what was left of
+`wait_duration`, where it used to start closed. So does a breaker created
+under a name that was open when its process was lost, unless
+`seki:delete_breaker/1` was called for the name in between. A handler of
+`[seki, breaker, state_change]` can therefore see `from => undefined` with
+`to => open`.
+
 The log lines that carry a name are now structured reports, for example
 `#{msg => bulkhead_full, name => db_pool, max_concurrent => 25}`, where they
 were formatted strings.

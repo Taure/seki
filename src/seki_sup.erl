@@ -10,6 +10,7 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
+    ok = seki_breaker_trips:new_table(),
     SupFlags = #{
         strategy => one_for_one,
         intensity => 5,

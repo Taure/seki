@@ -38,11 +38,11 @@ start_child(Name, Opts) ->
 
 -spec stop_breaker(seki:name()) -> ok | {error, term()}.
 stop_breaker(Name) ->
-    case supervisor:terminate_child(?MODULE, Name) of
-        ok ->
-            supervisor:delete_child(?MODULE, Name);
-        Error ->
-            Error
+    Stopped = supervisor:terminate_child(?MODULE, Name),
+    ok = seki_breaker_trips:closed(Name),
+    case Stopped of
+        ok -> supervisor:delete_child(?MODULE, Name);
+        Error -> Error
     end.
 
 -spec named() -> [{seki:name(), pid()}].
