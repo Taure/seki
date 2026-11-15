@@ -20,7 +20,9 @@ suits most rate limiting use cases.
 
 ## Options
 
-- `scope`: pg scope atom (default: `seki_pg`)
+- `scope`: pg scope atom (default: `seki_pg`). A scope that is not running is
+  started under seki's supervisor; one that is running, such as a scope your
+  application started, is used as it is.
 - `group`: pg group. A limiter created with `seki:new_limiter/2` defaults to
   `{seki_limiter, Name}`, its own group; a backend started on its own defaults
   to `{seki_limiters, TableName}`. Limiters that share a group merge each
@@ -28,7 +30,8 @@ suits most rate limiting use cases.
 - `gossip_interval`: broadcast interval in ms (default: 1000)
 
 `init/1` returns `{error, {invalid_option, Key}}` when `scope` or
-`table_name` is not an atom, or `gossip_interval` is not a whole number of
+`table_name` is not an atom, when `scope` is the registered name of something
+that is not a `pg` scope, or when `gossip_interval` is not a whole number of
 milliseconds from 1 to 4294967295.
 
 ## The gossip process
@@ -36,14 +39,15 @@ milliseconds from 1 to 4294967295.
 The gossip process is supervised by seki and is not linked to the process
 that called `init/1`, which owns the table. A gossip process that dies is
 restarted on the same table: the counters are kept and no limiter is lost. It
-stops when `terminate/1` is called or when the owner of the table exits.
+joins its group again when its scope is restarted. It stops when
+`terminate/1` is called or when the owner of the table exits.
 
 A gossip process that dies more than 3 times in 10 seconds is not restarted
 again. Its limiter keeps counting on this node and no longer shares its state
 with the other nodes until it is deleted and created again.
 
-Without the seki application running, the gossip process is linked to the
-caller of `init/1`.
+Without the seki application running, the scope is started unsupervised and
+the gossip process is linked to the caller of `init/1`.
 """.
 
 -behaviour(seki_backend).
@@ -108,7 +112,12 @@ terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
 
 start(Opts) ->
     Scope = maps:get(scope, Opts, seki_pg),
-    ok = ensure_pg_scope(Scope),
+    case seki_scope_sup:ensure(Scope) of
+        ok -> start(Scope, Opts);
+        {error, not_a_scope} -> {error, {invalid_option, scope}}
+    end.
+
+start(Scope, Opts) ->
     TableName = maps:get(table_name, Opts, seki_pg_data),
     Group = maps:get(group, Opts, {seki_limiters, TableName}),
     Tab = ets:new(TableName, [
@@ -146,10 +155,4 @@ start(Opts) ->
         {error, Reason} ->
             true = ets:delete(Tab),
             {error, Reason}
-    end.
-
-ensure_pg_scope(Scope) ->
-    case pg:start(Scope) of
-        {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok
     end.

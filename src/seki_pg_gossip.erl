@@ -7,7 +7,9 @@ Joins a `pg` group and periodically broadcasts local ETS state to all peers.
 Merges received state using algorithm-aware strategies (max counts for sliding
 windows, lower tokens for token buckets, higher TAT for GCRA).
 
-Started with an `owner`, the process stops when that process exits.
+The scope of the group is started if it is not running, and the group is
+joined again when the scope is restarted. Started with an `owner`, the process
+stops when that process exits.
 
 Used internally by `seki_backend_pg`.
 """.
@@ -32,6 +34,7 @@ Used internally by `seki_backend_pg`.
 ]).
 
 -define(GOSSIP_VERSION, 2).
+-define(REJOIN_PAUSE, 100).
 
 -record(state, {
     scope :: atom(),
@@ -40,6 +43,7 @@ Used internally by `seki_backend_pg`.
     interval :: pos_integer(),
     algorithm :: seki:algorithm() | undefined,
     window :: pos_integer() | undefined,
+    scope_monitor :: reference() | undefined,
     owner_monitor :: reference() | undefined
 }).
 
@@ -58,26 +62,31 @@ stop(Pid) ->
 %%----------------------------------------------------------------------
 
 init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts) ->
-    ok = pg:join(Scope, Group, self()),
-    ?LOG_INFO(
-        #{
-            msg => gossip_joined,
-            scope => Scope,
-            group => seki_name:label(Group),
-            interval => Interval
-        },
-        #{domain => [seki]}
-    ),
-    schedule_gossip(Interval),
-    {ok, #state{
-        scope = Scope,
-        group = Group,
-        tab = Tab,
-        interval = Interval,
-        algorithm = maps:get(algorithm, Opts, undefined),
-        window = maps:get(window, Opts, undefined),
-        owner_monitor = owner_monitor(Opts)
-    }}.
+    case join(Scope, Group) of
+        {ok, ScopeMonitor} ->
+            ?LOG_INFO(
+                #{
+                    msg => gossip_joined,
+                    scope => Scope,
+                    group => seki_name:label(Group),
+                    interval => Interval
+                },
+                #{domain => [seki]}
+            ),
+            schedule_gossip(Interval),
+            {ok, #state{
+                scope = Scope,
+                group = Group,
+                tab = Tab,
+                interval = Interval,
+                algorithm = maps:get(algorithm, Opts, undefined),
+                window = maps:get(window, Opts, undefined),
+                scope_monitor = ScopeMonitor,
+                owner_monitor = owner_monitor(Opts)
+            }};
+        no_scope ->
+            {stop, {no_scope, Scope}}
+    end.
 
 handle_call(Request, _From, State) ->
     ok = seki_unexpected:dropped(?MODULE, call, Request),
@@ -98,6 +107,10 @@ handle_info(gossip, #state{interval = Interval} = State) ->
     broadcast_state(State),
     schedule_gossip(Interval),
     {noreply, State};
+handle_info({'DOWN', Monitor, process, _Scope, _Reason}, #state{scope_monitor = Monitor} = State) ->
+    {noreply, rejoined(State)};
+handle_info(rejoin, #state{scope_monitor = undefined} = State) ->
+    {noreply, rejoined(State)};
 handle_info({'DOWN', Monitor, process, _Owner, _Reason}, #state{owner_monitor = Monitor} = State) ->
     {stop, normal, State};
 handle_info(Message, State) ->
@@ -109,12 +122,43 @@ terminate(Reason, #state{scope = Scope, group = Group}) ->
         #{msg => gossip_leaving, scope => Scope, group => seki_name:label(Group), reason => Reason},
         #{domain => [seki]}
     ),
-    pg:leave(Scope, Group, self()),
-    ok.
+    try
+        _ = pg:leave(Scope, Group, self()),
+        ok
+    catch
+        exit:_NoScope -> ok
+    end.
 
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
+
+%% The scope is watched from before the group is joined, so a scope that goes
+%% at any time after is noticed. A scope that is restarted has forgotten its
+%% members, and the group is joined again.
+join(Scope, Group) ->
+    case seki_scope_sup:ensure(Scope) of
+        ok ->
+            Monitor = monitor(process, Scope),
+            try pg:join(Scope, Group, self()) of
+                ok -> {ok, Monitor}
+            catch
+                exit:_NoScope ->
+                    true = demonitor(Monitor, [flush]),
+                    no_scope
+            end;
+        {error, not_a_scope} ->
+            no_scope
+    end.
+
+rejoined(#state{scope = Scope, group = Group} = State) ->
+    case join(Scope, Group) of
+        {ok, Monitor} ->
+            State#state{scope_monitor = Monitor};
+        no_scope ->
+            _ = erlang:send_after(?REJOIN_PAUSE, self(), rejoin),
+            State#state{scope_monitor = undefined}
+    end.
 
 %% The table belongs to the process that started the backend. When that
 %% process is gone the table is gone, and there is nothing left to gossip.

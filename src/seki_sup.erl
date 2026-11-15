@@ -33,6 +33,11 @@ init([]) ->
             type => supervisor
         },
         #{
+            id => seki_scope_sup,
+            start => {seki_scope_sup, start_link, []},
+            type => supervisor
+        },
+        #{
             id => seki_limiter_registry,
             start => {seki_limiter_registry, start_link, []}
         },
