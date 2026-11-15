@@ -101,6 +101,22 @@ cleanup_deletes_only_stale_entries_test() ->
         [fresh_bucket, fresh_window, tat], lists:sort([K || {K, _} <:- ets:tab2list(Tab)])
     ).
 
+cleanup_arrivals_deletes_the_times_that_have_passed_test() ->
+    Tab = new_tab(),
+    Now = erlang:monotonic_time(millisecond),
+    true = ets:insert(Tab, [
+        {passed, Now - 1},
+        {passed_long_ago, Now - 86400000.5},
+        {to_come, Now + 60000},
+        {bucket, {1.0, Now - 86400000}},
+        {window, {1, 2, Now - 86400000}},
+        {not_a_time, ~"0"}
+    ]),
+    ok = seki_ets:cleanup_arrivals(Tab),
+    ?assertEqual(
+        [bucket, not_a_time, to_come, window], lists:sort([K || {K, _} <:- ets:tab2list(Tab)])
+    ).
+
 keep_step(_Current) ->
     {seen, keep}.
 

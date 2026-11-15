@@ -21,6 +21,7 @@ For distributed rate limiting, see `seki_backend_pg`.
     atomic_update/3,
     delete/2,
     cleanup/2,
+    cleanup_arrivals/1,
     terminate/1
 ]).
 
@@ -50,6 +51,9 @@ delete(Tab, Key) ->
 
 cleanup(Tab, OlderThan) ->
     seki_ets:cleanup(Tab, OlderThan).
+
+cleanup_arrivals(Tab) ->
+    seki_ets:cleanup_arrivals(Tab).
 
 terminate(Tab) ->
     ets:delete(Tab),

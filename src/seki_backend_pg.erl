@@ -62,6 +62,7 @@ the gossip process is linked to the caller of `init/1`.
     atomic_update/3,
     delete/2,
     cleanup/2,
+    cleanup_arrivals/1,
     terminate/1
 ]).
 
@@ -99,6 +100,9 @@ delete(#state{local_tab = Tab}, Key) ->
 
 cleanup(#state{local_tab = Tab}, OlderThan) ->
     seki_ets:cleanup(Tab, OlderThan).
+
+cleanup_arrivals(#state{local_tab = Tab}) ->
+    seki_ets:cleanup_arrivals(Tab).
 
 terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
     ?LOG_INFO(#{msg => distributed_backend_stopping}, #{domain => [seki]}),

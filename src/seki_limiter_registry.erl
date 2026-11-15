@@ -228,8 +228,21 @@ schedule_cleanup() ->
     erlang:send_after(?CLEANUP_INTERVAL, self(), cleanup).
 
 run_cleanup() ->
-    _ = [
-        backend_callback(Limiter, cleanup, [?CLEANUP_INTERVAL * 10])
-     || Limiter <- ets:tab2list(?REGISTRY_TAB)
-    ],
+    _ = [swept(Limiter) || Limiter <- ets:tab2list(?REGISTRY_TAB)],
+    ok.
+
+%% A key that was last seen within two windows can still count against the
+%% limit, so it is kept that long however long the window is.
+swept(#limiter{config = #{window := Window}} = Limiter) ->
+    ok = backend_callback(Limiter, cleanup, [
+        seki_number:larger(?CLEANUP_INTERVAL * 10, 2 * Window)
+    ]),
+    arrivals_swept(Limiter).
+
+arrivals_swept(#limiter{algorithm = gcra, backend = Backend} = Limiter) ->
+    case erlang:function_exported(Backend, cleanup_arrivals, 1) of
+        true -> backend_callback(Limiter, cleanup_arrivals, []);
+        false -> ok
+    end;
+arrivals_swept(#limiter{}) ->
     ok.

@@ -12,7 +12,8 @@
     local_update/3,
     update/4,
     apply_update_fun/3,
-    cleanup/2
+    cleanup/2,
+    cleanup_arrivals/1
 ]).
 
 -define(MAX_ATTEMPTS, 1000).
@@ -91,6 +92,15 @@ cleanup(Tab, OlderThan) ->
         {{'_', {'_', '_', '$1'}}, [{'<', '$1', Cutoff}], [true]},
         {{'_', {'_', '$1'}}, [{'<', '$1', Cutoff}], [true]}
     ]),
+    ok.
+
+%% A row of a `gcra` limiter is the time its key is free again. Once that
+%% time has passed the row says what no row says, so it can go whatever the
+%% window of the limiter is.
+-spec cleanup_arrivals(ets:table()) -> ok.
+cleanup_arrivals(Tab) ->
+    Now = erlang:monotonic_time(millisecond),
+    _ = ets:select_delete(Tab, [{{'_', '$1'}, [{is_number, '$1'}, {'<', '$1', Now}], [true]}]),
     ok.
 
 local_update(_Tab, _Key, _Step, 0) ->
