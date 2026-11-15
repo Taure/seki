@@ -40,6 +40,7 @@ Two algorithms:
 
 -type algorithm() :: aimd | gradient.
 -type outcome() :: ok | error | timeout | drop.
+-type raised() :: {error | exit | throw, Reason :: term(), erlang:stacktrace()}.
 
 -type opts() :: #{
     algorithm => algorithm(),
@@ -54,7 +55,7 @@ Two algorithms:
     long_window => pos_integer()
 }.
 
--export_type([algorithm/0, outcome/0, opts/0]).
+-export_type([algorithm/0, outcome/0, raised/0, opts/0]).
 
 -record(state, {
     name :: seki:name(),
@@ -86,20 +87,28 @@ start_link(Name, Opts) ->
 -doc "Acquire a concurrency slot. Returns `{error, limit_reached}` if at capacity.".
 -spec acquire(seki:name()) -> ok | {error, limit_reached}.
 acquire(Name) ->
-    gen_server:call(seki_registry:server(Name), {acquire, self()}).
+    case gen_server:call(seki_registry:server(Name), {acquire, self()}) of
+        ok -> ok;
+        {error, limit_reached} -> {error, limit_reached}
+    end.
 
 -doc "Release a slot and report the outcome. The outcome adjusts the concurrency limit.".
 -spec release(seki:name(), outcome()) -> ok.
 release(Name, Outcome) ->
     gen_server:cast(seki_registry:server(Name), {release, self(), Outcome}).
 
--doc "Execute a function with automatic acquire/release and outcome reporting.".
--spec call(seki:name(), fun(() -> term())) -> {ok, term()} | {error, limit_reached}.
+-doc """
+Execute a function with automatic acquire/release and outcome reporting.
+
+Returns `{error, {Class, Reason, Stacktrace}}` if the function raises.
+""".
+-spec call(seki:name(), fun(() -> term())) -> {ok, term()} | {error, limit_reached | raised()}.
 call(Name, Fun) ->
     call(Name, Fun, #{}).
 
 -doc "Execute a function with automatic acquire/release, outcome reporting, and options.".
--spec call(seki:name(), fun(() -> term()), map()) -> {ok, term()} | {error, limit_reached}.
+-spec call(seki:name(), fun(() -> term()), map()) ->
+    {ok, term()} | {error, limit_reached | raised()}.
 call(Name, Fun, _Opts) ->
     case acquire(Name) of
         ok ->
@@ -124,7 +133,18 @@ call(Name, Fun, _Opts) ->
         available := non_neg_integer()
     }.
 status(Name) ->
-    gen_server:call(seki_registry:server(Name), status).
+    status_reply(gen_server:call(seki_registry:server(Name), status)).
+
+-spec status_reply(term()) ->
+    #{
+        current_limit := pos_integer(),
+        in_flight := non_neg_integer(),
+        available := non_neg_integer()
+    }.
+status_reply(#{current_limit := Limit, in_flight := InFlight, available := Available}) when
+    is_integer(Limit), is_integer(InFlight), is_integer(Available)
+->
+    #{current_limit => Limit, in_flight => InFlight, available => Available}.
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks
@@ -212,8 +232,8 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
-    case maps:take(MonRef, State#state.monitors) of
-        {{_, StartTime}, NewMonitors} ->
+    case State#state.monitors of
+        #{MonRef := {_Holder, StartTime}} = Monitors ->
             ?LOG_WARNING(
                 #{
                     msg => adaptive_holder_died,
@@ -226,11 +246,11 @@ handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
             Duration = erlang:monotonic_time(millisecond) - StartTime,
             NewState0 = State#state{
                 in_flight = seki_number:larger(0, State#state.in_flight - 1),
-                monitors = NewMonitors
+                monitors = maps:remove(MonRef, Monitors)
             },
             NewState = adjust_limit(error, Duration, NewState0),
             {noreply, NewState};
-        error ->
+        #{} ->
             {noreply, State}
     end;
 handle_info(_Info, State) ->
