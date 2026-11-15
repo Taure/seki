@@ -47,9 +47,12 @@ supervised(Scope) ->
         exit:Reason -> {error, Reason}
     end.
 
+%% `pg` runs a scope as itself up to OTP 28 and as a `data_publisher` from
+%% OTP 29.
 scope_process(Registered) when is_pid(Registered) ->
     case proc_lib:translate_initial_call(Registered) of
         {pg, init, 1} -> ok;
+        {data_publisher, init, 1} -> ok;
         _SomethingElse -> {error, not_a_scope}
     end;
 scope_process(_PortOrNothing) ->

@@ -11,6 +11,7 @@ scope_test_() ->
         fun(_) -> application:stop(seki) end, [
             fun seki_starts_the_scope_it_uses/0,
             fun a_scope_that_is_running_is_used_as_it_is/0,
+            fun a_scope_of_either_release_is_one/0,
             fun a_name_registered_for_something_else_is_refused/0,
             fun gossip_joins_again_when_its_scope_is_restarted/0,
             fun callers_starting_a_scope_at_once_share_it/0,
@@ -65,6 +66,30 @@ a_scope_that_is_running_is_used_as_it_is() ->
         true = unlink(Scope),
         ok = gen_server:stop(Scope)
     end.
+
+%% `pg` runs a scope as itself up to OTP 28 and as a `data_publisher` from
+%% OTP 29. A process started as either is a scope, on whichever release the
+%% test runs.
+a_scope_of_either_release_is_one() ->
+    [
+        begin
+            Self = self(),
+            Scope = spawn(fun() ->
+                put('$initial_call', StartedAs),
+                Self ! {started, self()},
+                receive
+                    stop -> ok
+                end
+            end),
+            receive
+                {started, Scope} -> ok
+            end,
+            true = register(seki_scope_sup_tests_release, Scope),
+            ?assertEqual(ok, seki_scope_sup:ensure(seki_scope_sup_tests_release)),
+            ok = killed(Scope)
+        end
+     || StartedAs <:- [{pg, init, 1}, {data_publisher, init, 1}]
+    ].
 
 a_name_registered_for_something_else_is_refused() ->
     Registry = whereis(seki_limiter_registry),
