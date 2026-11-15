@@ -53,6 +53,10 @@ Compatible with Kubernetes liveness/readiness/startup probes via
 
 -export_type([health/0, check_result/0, check_fun/0]).
 
+-define(IS_HEALTH(Health),
+    (Health =:= healthy orelse Health =:= degraded orelse Health =:= unhealthy)
+).
+
 -record(check, {
     name :: atom(),
     fun_ :: fun(() -> term()),
@@ -95,28 +99,35 @@ returns anything else is reported as
 -spec register_check(seki:name(), atom(), check_fun(), map()) -> ok.
 register_check(Name, CheckName, Fun, Opts) ->
     Critical = maps:get(critical, Opts, false),
-    gen_server:call(seki_registry:server(Name), {register, CheckName, Fun, Critical}).
+    ok = gen_server:call(seki_registry:server(Name), {register, CheckName, Fun, Critical}).
 
 -doc "Remove a previously registered health check.".
 -spec unregister_check(seki:name(), atom()) -> ok.
 unregister_check(Name, CheckName) ->
-    gen_server:call(seki_registry:server(Name), {unregister, CheckName}).
+    ok = gen_server:call(seki_registry:server(Name), {unregister, CheckName}).
 
 -doc "Run all health checks and return aggregated health status.".
 -spec check(seki:name()) -> #{health := health(), checks := map()}.
 check(Name) ->
-    gen_server:call(seki_registry:server(Name), check).
+    check_reply(gen_server:call(seki_registry:server(Name), check)).
+
+-spec check_reply(term()) -> #{health := health(), checks := map()}.
+check_reply(#{health := Health, checks := Checks}) when ?IS_HEALTH(Health), is_map(Checks) ->
+    #{health => Health, checks => Checks}.
 
 -doc "Run a single named health check.".
 -spec check_one(seki:name(), atom()) -> check_result() | {error, not_found}.
 check_one(Name, CheckName) ->
-    gen_server:call(seki_registry:server(Name), {check_one, CheckName}).
+    case gen_server:call(seki_registry:server(Name), {check_one, CheckName}) of
+        {error, not_found} -> {error, not_found};
+        {Health, Details} when ?IS_HEALTH(Health), is_map(Details) -> {Health, Details}
+    end.
 
 -doc "Kubernetes liveness probe — checks if the process is alive and responsive.".
 -spec liveness(seki:name()) -> ok | {error, unhealthy}.
 liveness(Name) ->
     try
-        gen_server:call(seki_registry:server(Name), liveness, 5000)
+        ok = gen_server:call(seki_registry:server(Name), liveness, 5000)
     catch
         _:_ -> {error, unhealthy}
     end.
@@ -241,10 +252,7 @@ run_check(#check{fun_ = Fun} = Check) ->
     Now = erlang:monotonic_time(millisecond),
     Result =
         try Fun() of
-            {Health, Details} when
-                (Health =:= healthy orelse Health =:= degraded orelse Health =:= unhealthy),
-                is_map(Details)
-            ->
+            {Health, Details} when ?IS_HEALTH(Health), is_map(Details) ->
                 {Health, Details};
             Invalid ->
                 ?LOG_ERROR(
@@ -322,9 +330,8 @@ maybe_add_vm_checks(State) ->
     State#state{checks = maps:merge(Checks, State#state.checks)}.
 
 check_vm_memory() ->
-    MemInfo = erlang:memory(),
-    TotalMB = proplists:get_value(total, MemInfo) div (1024 * 1024),
-    ProcessMB = proplists:get_value(processes, MemInfo) div (1024 * 1024),
+    TotalMB = erlang:memory(total) div (1024 * 1024),
+    ProcessMB = erlang:memory(processes) div (1024 * 1024),
     %% Use process limit as heuristic — high memory is degraded, not unhealthy
     Health =
         case TotalMB > 4096 of
