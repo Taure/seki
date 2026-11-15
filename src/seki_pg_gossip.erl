@@ -127,15 +127,12 @@ broadcast_state(#state{scope = Scope, group = Group, tab = Tab, algorithm = Algo
         [] ->
             ok;
         _ ->
-            Members = pg:get_members(Scope, Group),
             Self = self(),
-            Peers = [P || P <- Members, P =/= Self],
-            lists:foreach(
-                fun(Peer) ->
-                    gen_server:cast(Peer, {seki_gossip, ?GOSSIP_VERSION, Algorithm, Entries})
-                end,
-                Peers
-            )
+            _ = [
+                gen_server:cast(Peer, {seki_gossip, ?GOSSIP_VERSION, Algorithm, Entries})
+             || Peer <- pg:get_members(Scope, Group), Peer =/= Self
+            ],
+            ok
     end.
 
 %% Monotonic time differs between nodes by the gap in VM uptime, so the

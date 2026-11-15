@@ -43,7 +43,7 @@ suits most rate limiting use cases.
 ]).
 
 -record(state, {
-    local_tab :: ets:tid(),
+    local_tab :: ets:table(),
     gossip_pid :: pid(),
     scope :: atom()
 }).
