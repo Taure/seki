@@ -408,9 +408,10 @@ settled(Parent, Id, Killed) ->
 
 -spec supervisor_of(atom(), term()) -> pid().
 supervisor_of(Parent, Id) ->
-    case lists:keyfind(Id, 1, supervisor:which_children(Parent)) of
-        {Id, Supervisor, supervisor, [seki_name_sup]} when is_pid(Supervisor) -> Supervisor
-    end.
+    held(Id, lists:keyfind(Id, 1, supervisor:which_children(Parent))).
+
+-spec held(term(), term()) -> pid().
+held(Id, {Id, Supervisor, supervisor, [seki_name_sup]}) when is_pid(Supervisor) -> Supervisor.
 
 -spec supervised(atom(), term()) -> {ok, pid()} | gone | unsettled.
 supervised(Parent, Id) ->

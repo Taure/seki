@@ -206,9 +206,10 @@ started({state, Tab, Gossip, _Scope}) when is_reference(Tab), is_pid(Gossip) ->
 
 -spec running(atom()) -> pid().
 running(Name) ->
-    case whereis(Name) of
-        Process when is_pid(Process) -> Process
-    end.
+    live(whereis(Name)).
+
+-spec live(term()) -> pid().
+live(Process) when is_pid(Process) -> Process.
 
 %% The supervisor of a gossip process that ended goes with it, a moment
 %% after: the supervisor above answers in turn, so it is asked again.

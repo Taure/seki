@@ -248,6 +248,7 @@ registered(Name) -> seki_registry:whereis_name(Name).
 
 -spec running(atom()) -> pid().
 running(Name) ->
-    case whereis(Name) of
-        Process when is_pid(Process) -> Process
-    end.
+    live(whereis(Name)).
+
+-spec live(term()) -> pid().
+live(Process) when is_pid(Process) -> Process.

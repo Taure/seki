@@ -298,6 +298,7 @@ gossip({state, _Tab, Gossip, _Scope}) when is_pid(Gossip) -> Gossip.
 
 -spec running(atom()) -> pid().
 running(Name) ->
-    case whereis(Name) of
-        Process when is_pid(Process) -> Process
-    end.
+    live(whereis(Name)).
+
+-spec live(term()) -> pid().
+live(Process) when is_pid(Process) -> Process.
