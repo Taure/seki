@@ -123,7 +123,10 @@ stopped(Keeper) ->
         undefined -> true;
         _Held -> true = ets:delete(?TAB)
     end,
-    ok.
+    receive
+        {'ETS-TRANSFER', ?TAB, _From, ?TAB} -> ok
+    after 0 -> ok
+    end.
 
 become_registry() ->
     ok = wait_until(fun() -> whereis(seki_registry) =:= undefined end),
