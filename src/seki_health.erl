@@ -213,7 +213,7 @@ run_all_checks(State) ->
     {Results, NewChecks} = maps:fold(
         fun(Name, Check, {Acc, CheckAcc}) ->
             {Result, NewCheck} = run_check(Check),
-            {maps:put(Name, Result, Acc), maps:put(Name, NewCheck, CheckAcc)}
+            {Acc#{Name => Result}, CheckAcc#{Name => NewCheck}}
         end,
         {#{}, #{}},
         State#state.checks
