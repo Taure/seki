@@ -23,6 +23,14 @@
 -define(REGISTRY_TAB, seki_limiter_registry).
 -define(CLEANUP_INTERVAL, 60000).
 
+-record(limiter, {
+    name :: seki:name(),
+    algorithm :: seki:algorithm(),
+    backend :: module(),
+    backend_state :: term(),
+    config :: map()
+}).
+
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -30,16 +38,26 @@ start_link() ->
 register(Pid, _Opts) when is_pid(Pid) ->
     {error, {invalid_name, Pid}};
 register(Name, Opts) ->
-    gen_server:call(?MODULE, {register, Name, Opts}).
+    case gen_server:call(?MODULE, {register, Name, Opts}) of
+        ok -> ok;
+        {error, Reason} -> {error, Reason}
+    end.
 
 -spec unregister(seki:name()) -> ok.
 unregister(Name) ->
-    gen_server:call(?MODULE, {unregister, Name}).
+    ok = gen_server:call(?MODULE, {unregister, Name}).
 
 -spec lookup(seki:name()) -> {seki:algorithm(), module(), term(), map()}.
 lookup(Name) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
-        [{Name, Algorithm, Backend, BackendState, Config}] ->
+        [
+            #limiter{
+                algorithm = Algorithm,
+                backend = Backend,
+                backend_state = BackendState,
+                config = Config
+            }
+        ] ->
             {Algorithm, Backend, BackendState, Config};
         [] ->
             error({limiter_not_found, Name})
@@ -54,6 +72,7 @@ init([]) ->
         named_table,
         set,
         protected,
+        {keypos, #limiter.name},
         {read_concurrency, true}
     ]),
     schedule_cleanup(),
@@ -78,7 +97,7 @@ handle_call({register, Name, Opts}, _From, State) ->
     end;
 handle_call({unregister, Name}, _From, State) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
-        [{Name, _Algorithm, Backend, BackendState, _Config}] ->
+        [#limiter{backend = Backend, backend_state = BackendState}] ->
             Backend:terminate(BackendState),
             ets:delete(?REGISTRY_TAB, Name),
             {reply, ok, maps:remove(Name, State)};
@@ -99,15 +118,10 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    %% Clean up all backends
-    ets:foldl(
-        fun({_Name, _Alg, Backend, BackendState, _Config}, Acc) ->
-            Backend:terminate(BackendState),
-            Acc
-        end,
-        ok,
-        ?REGISTRY_TAB
-    ),
+    _ = [
+        Backend:terminate(BackendState)
+     || #limiter{backend = Backend, backend_state = BackendState} <- ets:tab2list(?REGISTRY_TAB)
+    ],
     ok.
 
 %%----------------------------------------------------------------------
@@ -120,7 +134,13 @@ start_limiter(Name, Backend, Opts, State) ->
     Limiter = #{algorithm => Algorithm, window => maps:get(window, Opts)},
     {ok, BackendState} = Backend:init(BackendOpts#{seki_limiter => Limiter}),
     Config = (build_config(Algorithm, Opts))#{atomic => is_atomic(Backend)},
-    true = ets:insert(?REGISTRY_TAB, {Name, Algorithm, Backend, BackendState, Config}),
+    true = ets:insert(?REGISTRY_TAB, #limiter{
+        name = Name,
+        algorithm = Algorithm,
+        backend = Backend,
+        backend_state = BackendState,
+        config = Config
+    }),
     State#{Name => BackendState}.
 
 is_atomic(Backend) ->
@@ -168,11 +188,8 @@ schedule_cleanup() ->
     erlang:send_after(?CLEANUP_INTERVAL, self(), cleanup).
 
 run_cleanup() ->
-    ets:foldl(
-        fun({_Name, _Alg, Backend, BackendState, _Config}, Acc) ->
-            Backend:cleanup(BackendState, ?CLEANUP_INTERVAL * 10),
-            Acc
-        end,
-        ok,
-        ?REGISTRY_TAB
-    ).
+    _ = [
+        Backend:cleanup(BackendState, ?CLEANUP_INTERVAL * 10)
+     || #limiter{backend = Backend, backend_state = BackendState} <- ets:tab2list(?REGISTRY_TAB)
+    ],
+    ok.
