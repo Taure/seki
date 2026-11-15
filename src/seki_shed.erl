@@ -97,7 +97,10 @@ admit(Name) ->
 -doc "Admit a request with the given priority (0 = critical, 3 = low).".
 -spec admit(seki:name(), priority()) -> ok | {error, shed}.
 admit(Name, Priority) ->
-    gen_server:call(seki_registry:server(Name), {admit, Priority}).
+    case gen_server:call(seki_registry:server(Name), {admit, Priority}) of
+        ok -> ok;
+        {error, shed} -> {error, shed}
+    end.
 
 -doc "Signal request completion with duration in ms. Updates CoDel state.".
 -spec complete(seki:name(), non_neg_integer()) -> ok.
@@ -107,7 +110,10 @@ complete(Name, DurationMs) ->
 -doc "Get current load shedder status (in_flight, utilization, dropping, stats).".
 -spec status(seki:name()) -> map().
 status(Name) ->
-    gen_server:call(seki_registry:server(Name), status).
+    status_reply(gen_server:call(seki_registry:server(Name), status)).
+
+-spec status_reply(term()) -> map().
+status_reply(Status) when is_map(Status) -> Status.
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks
@@ -323,8 +329,7 @@ record_latency(DurationMs, #state{recent_latencies = Q, latency_count = Count} =
 avg_latency(#state{latency_count = 0}) ->
     0;
 avg_latency(#state{recent_latencies = Q, latency_count = Count}) ->
-    Sum = queue:fold(fun(V, Acc) -> Acc + V end, 0, Q),
-    Sum / Count.
+    lists:sum(queue:to_list(Q)) / Count.
 
 %%----------------------------------------------------------------------
 %% Telemetry
