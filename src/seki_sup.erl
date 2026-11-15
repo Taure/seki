@@ -15,8 +15,11 @@ init([]) ->
         intensity => 5,
         period => 10
     },
-    ok = seki_registry:new_table(),
     Children = [
+        #{
+            id => seki_registry_keeper,
+            start => {seki_registry_keeper, start_link, []}
+        },
         #{
             id => seki_registry,
             start => {seki_registry, start_link, []}

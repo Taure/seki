@@ -17,6 +17,12 @@ registry_test_() ->
             fun a_name_is_free_once_its_process_is_gone/0,
             fun a_message_reaches_the_named_process/0,
             fun names_outlive_a_restart_of_the_registry/0,
+            fun names_outlive_a_restart_of_the_keeper/0,
+            fun only_the_registry_writes_the_table/0,
+            fun only_the_registry_is_given_the_table/0,
+            fun the_registry_restarts_over_any_row/0,
+            fun only_a_local_process_is_registered/0,
+            fun an_unknown_message_leaves_the_registry_running/0,
             fun a_breaker_is_named_by_a_term/0,
             fun a_bulkhead_is_named_by_a_term/0,
             fun a_load_shedder_is_named_by_a_term/0,
@@ -94,6 +100,107 @@ names_outlive_a_restart_of_the_registry() ->
     ok = seki:delete_breaker(?NAME),
     _ = sys:get_state(seki_registry),
     ?assertEqual([], ets:lookup(seki_registry, ?NAME)).
+
+names_outlive_a_restart_of_the_keeper() ->
+    {ok, Breaker} = seki:new_breaker(?NAME, #{}),
+    Keeper = whereis(seki_registry_keeper),
+    stopped(Keeper),
+    _ = restarted(seki_registry_keeper, Keeper),
+    _ = sys:get_state(seki_registry),
+    Registry = whereis(seki_registry),
+    stopped(Registry),
+    _ = restarted(seki_registry, Registry),
+    ?assertEqual(Breaker, seki_registry:whereis_name(?NAME)),
+    ?assertEqual(closed, seki:state(?NAME)).
+
+only_the_registry_writes_the_table() ->
+    {ok, Breaker} = seki:new_breaker(?NAME, #{}),
+    ?assertEqual(protected, ets:info(seki_registry, protection)),
+    ?assertEqual(whereis(seki_registry), ets:info(seki_registry, owner)),
+    ?assertError(badarg, ets:insert(seki_registry, {?NAME, self(), make_ref()})),
+    ?assertError(badarg, ets:delete(seki_registry, ?NAME)),
+    ?assertError(badarg, ets:delete_all_objects(seki_registry)),
+    ?assertEqual(Breaker, seki_registry:whereis_name(?NAME)).
+
+only_the_registry_is_given_the_table() ->
+    Registry = whereis(seki_registry),
+    ?assertEqual({error, not_the_registry}, seki_registry_keeper:claim()),
+    ok = sys:suspend(seki_registry),
+    ?assertEqual({error, not_the_registry}, seki_registry_keeper:claim()),
+    ok = sys:resume(seki_registry),
+    ?assertEqual(Registry, ets:info(seki_registry, owner)).
+
+the_registry_restarts_over_any_row() ->
+    {ok, Breaker} = seki:new_breaker(?NAME, #{}),
+    Gone = idle(),
+    stopped(Gone),
+    Rows = [
+        {junk},
+        {{junk, 1}, not_a_pid, make_ref()},
+        {{junk, 2}, remote_pid(), make_ref()},
+        {{junk, 3}, Gone, make_ref()},
+        {{junk, 4}, self()},
+        {{junk, 5}, self(), not_a_monitor, extra}
+    ],
+    sys:replace_state(seki_registry, fun(Names) ->
+        true = ets:insert(seki_registry, Rows),
+        Names
+    end),
+    Supervisor = whereis(seki_sup),
+    [
+        begin
+            Registry = whereis(seki_registry),
+            stopped(Registry),
+            _ = sys:get_state(restarted(seki_registry, Registry))
+        end
+     || _Round <:- lists:seq(1, 3)
+    ],
+    ?assertEqual(Supervisor, whereis(seki_sup)),
+    ?assertMatch([{?NAME, Breaker, _}], ets:tab2list(seki_registry)),
+    ?assertEqual(closed, seki:state(?NAME)),
+    [
+        ?assertEqual(undefined, seki_registry:whereis_name(Name))
+     || Name <:- [junk | [{junk, Number} || Number <:- lists:seq(1, 5)]]
+    ].
+
+only_a_local_process_is_registered() ->
+    Remote = remote_pid(),
+    ?assertError(function_clause, seki_registry:register_name(?NAME, Remote)),
+    Registry = whereis(seki_registry),
+    ?assertEqual(
+        {error, unknown_request}, gen_server:call(seki_registry, {register, ?NAME, Remote})
+    ),
+    ?assertEqual(
+        {error, unknown_request}, gen_server:call(seki_registry, {register, ?NAME, not_a_pid})
+    ),
+    ?assertEqual(undefined, seki_registry:whereis_name(?NAME)),
+    ?assertEqual(Registry, whereis(seki_registry)).
+
+an_unknown_message_leaves_the_registry_running() ->
+    Registry = whereis(seki_registry),
+    Keeper = whereis(seki_registry_keeper),
+    ?assertEqual(yes, seki_registry:register_name(?NAME, self())),
+    [
+        begin
+            Server ! Message,
+            gen_server:cast(Server, Message),
+            _ = gen_server:call(Server, Message)
+        end
+     || Server <:- [seki_registry, seki_registry_keeper],
+        Message <:- [
+            unknown,
+            {'DOWN', make_ref(), process, self(), normal},
+            {'DOWN', not_a_monitor, process, not_a_pid, normal},
+            {'ETS-TRANSFER', seki_registry, self(), seki_registry},
+            {unregister, {'_', '$1'}},
+            {register, ?NAME, not_a_pid},
+            keeper_restarted,
+            claim
+        ]
+    ],
+    ?assertEqual(Registry, whereis(seki_registry)),
+    ?assertEqual(Keeper, whereis(seki_registry_keeper)),
+    ?assertEqual(self(), seki_registry:whereis_name(?NAME)).
 
 a_breaker_is_named_by_a_term() ->
     Name = {breaker, ~"orders", 1},
@@ -222,6 +329,10 @@ nothing_is_registered_while_seki_is_stopped() ->
     ?assertExit({noproc, _}, seki:state(?NAME)),
     ?assertExit({noproc, _}, seki:state(seki_registry_tests_no_breaker)),
     ?assertEqual(ok, seki:reset_breaker(?NAME)).
+
+remote_pid() ->
+    Node = ~"elsewhere@nohost",
+    binary_to_term(<<131, 88, 119, (byte_size(Node)), Node/binary, 1:32, 0:32, 1:32>>).
 
 idle() ->
     spawn(fun() ->
