@@ -31,15 +31,19 @@ server(Name) when is_atom(Name) -> Name;
 server(Pid) when is_pid(Pid) -> Pid;
 server(Name) -> {via, ?MODULE, Name}.
 
-%% A supervisor that starts named processes gives each child its name as its
-%% id, so it can say which names it holds when the table has been lost.
+%% A supervisor that starts named processes gives the supervisor of each its
+%% name as its id, so it can say which names it holds, and that supervisor
+%% which process it holds, when the table has been lost.
 -spec named_children(atom()) -> [{seki:name(), pid()}].
-named_children(Supervisor) ->
-    try supervisor:which_children(Supervisor) of
+named_children(Parent) ->
+    try supervisor:which_children(Parent) of
         Children ->
             [
-                {Name, Pid}
-             || {Name, Pid, _Type, _Modules} <- Children, is_pid(Pid), not is_atom(Name)
+                {Name, Process}
+             || {Name, Supervisor, _Type, _Modules} <- Children,
+                is_pid(Supervisor),
+                not is_atom(Name),
+                {ok, Process} <- [seki_name_sup:process(Supervisor)]
             ]
     catch
         exit:_NotRunning -> []

@@ -25,25 +25,18 @@ start_breaker(Name, Opts) ->
     end.
 
 start_child(Name, Opts) ->
-    ChildSpec = #{
+    seki_name_sup:start(?MODULE, #{
         id => Name,
         start => {seki_breaker, start_link, [Name, Opts]},
         restart => transient,
         shutdown => 5000
-    },
-    case supervisor:start_child(?MODULE, ChildSpec) of
-        {ok, Breaker} when is_pid(Breaker) -> {ok, Breaker};
-        {error, Reason} -> {error, Reason}
-    end.
+    }).
 
 -spec stop_breaker(seki:name()) -> ok | {error, term()}.
 stop_breaker(Name) ->
-    Stopped = supervisor:terminate_child(?MODULE, Name),
+    Stopped = seki_name_sup:stop(?MODULE, Name),
     ok = seki_breaker_trips:closed(Name),
-    case Stopped of
-        ok -> supervisor:delete_child(?MODULE, Name);
-        Error -> Error
-    end.
+    Stopped.
 
 -spec named() -> [{seki:name(), pid()}].
 named() ->

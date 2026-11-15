@@ -27,14 +27,14 @@ start_child(Module, Name, Opts) ->
     end.
 
 start_checked(Module, Name, Opts) ->
-    ChildSpec = #{
+    Process = #{
         id => Name,
         start => {Module, start_link, [Name, Opts]},
         restart => transient,
         shutdown => 5000
     },
-    case supervisor:start_child(?MODULE, ChildSpec) of
-        {ok, Pid} = Ok when is_pid(Pid) ->
+    case seki_name_sup:start(?MODULE, Process) of
+        {ok, Pid} = Ok ->
             ?LOG_INFO(
                 #{
                     msg => process_started,
@@ -60,26 +60,13 @@ start_checked(Module, Name, Opts) ->
 
 -spec stop_child(seki:name()) -> ok | {error, term()}.
 stop_child(Name) ->
-    case supervisor:terminate_child(?MODULE, Name) of
+    case seki_name_sup:stop(?MODULE, Name) of
         ok ->
-            case supervisor:delete_child(?MODULE, Name) of
-                ok ->
-                    ?LOG_INFO(
-                        #{msg => process_stopped, name => seki_name:label(Name)},
-                        #{domain => [seki]}
-                    ),
-                    ok;
-                {error, Reason} = Err ->
-                    ?LOG_ERROR(
-                        #{
-                            msg => process_delete_failed,
-                            name => seki_name:label(Name),
-                            reason => Reason
-                        },
-                        #{domain => [seki]}
-                    ),
-                    Err
-            end;
+            ?LOG_INFO(
+                #{msg => process_stopped, name => seki_name:label(Name)},
+                #{domain => [seki]}
+            ),
+            ok;
         {error, Reason} = Err ->
             ?LOG_ERROR(
                 #{msg => process_stop_failed, name => seki_name:label(Name), reason => Reason},
