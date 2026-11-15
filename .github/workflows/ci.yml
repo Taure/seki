@@ -8,12 +8,13 @@ on:
 
 jobs:
   ci:
-    uses: Taure/erlang-ci/.github/workflows/ci.yml@v2.0.5
+    uses: Taure/erlang-ci/.github/workflows/ci.yml@v2.3.2
     permissions:
       contents: write
       pull-requests: write
     with:
       version-file: '.tool-versions'
+      otp-matrix: '["28", "29"]'
       enable-ct: false
       enable-ex-doc: true
       enable-hank: true
@@ -26,7 +27,7 @@ jobs:
       enable-mutate: true
       mutate-diff: true
       mutate-min-score: '0'
-      mutate-args: '--exclude seki_otel,seki_app,seki_sup,seki_breaker_sup,seki_limiter_registry'
+      mutate-args: '--timeout 20000 --exclude seki_otel,seki_app'
 
   release:
     needs: ci
