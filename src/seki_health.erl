@@ -55,7 +55,7 @@ Compatible with Kubernetes liveness/readiness/startup probes via
 
 -record(check, {
     name :: atom(),
-    fun_ :: check_fun(),
+    fun_ :: fun(() -> term()),
     critical :: boolean(),
     last_result :: check_result() | undefined,
     last_check :: integer() | undefined
@@ -85,7 +85,13 @@ start_link(Name, Opts) ->
 register_check(Name, CheckName, Fun) ->
     register_check(Name, CheckName, Fun, #{}).
 
--doc "Register a health check with options. Set `#{critical => true}` to make failures return unhealthy.".
+-doc """
+Register a health check with options. Set `#{critical => true}` to make failures return unhealthy.
+
+The function returns `{Health, Details}`, with `Details` a map. A check that
+returns anything else is reported as
+`{unhealthy, #{error => {invalid_result, Returned}}}`.
+""".
 -spec register_check(seki:name(), atom(), check_fun(), map()) -> ok.
 register_check(Name, CheckName, Fun, Opts) ->
     Critical = maps:get(critical, Opts, false),
@@ -234,8 +240,18 @@ run_all_checks(State) ->
 run_check(#check{fun_ = Fun} = Check) ->
     Now = erlang:monotonic_time(millisecond),
     Result =
-        try
-            Fun()
+        try Fun() of
+            {Health, Details} when
+                (Health =:= healthy orelse Health =:= degraded orelse Health =:= unhealthy),
+                is_map(Details)
+            ->
+                {Health, Details};
+            Invalid ->
+                ?LOG_ERROR(
+                    #{msg => health_check_returned_no_health, check => Check#check.name},
+                    #{domain => [seki]}
+                ),
+                {unhealthy, #{error => {invalid_result, Invalid}}}
         catch
             _:Reason ->
                 logger:error(

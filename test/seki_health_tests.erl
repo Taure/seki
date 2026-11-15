@@ -21,7 +21,8 @@ health_test_() ->
         {"unregister check", fun unregister/0},
         {"check_one returns single result", fun check_one/0},
         {"exception in check returns unhealthy", fun exception_check/0},
-        {"vm checks run and report", fun vm_checks_run/0}
+        {"vm checks run and report", fun vm_checks_run/0},
+        {"a check that returns no health is unhealthy", fun invalid_result/0}
     ]}.
 
 starts_healthy() ->
@@ -136,3 +137,33 @@ vm_checks_run() ->
     #{checks := Checks} = seki_health:check(h_vm),
     ?assertEqual([vm_memory, vm_processes, vm_run_queue], lists:sort(maps:keys(Checks))),
     gen_server:stop(h_vm).
+
+invalid_result() ->
+    {ok, Checker} = seki_health:start_link(h_invalid, #{
+        vm_checks => false, check_interval => 60000
+    }),
+    Checks = #{
+        no_tuple => ok,
+        no_health => {fine, #{}},
+        no_details => {healthy, none}
+    },
+    [
+        ok = seki_health:register_check(h_invalid, CheckName, returning(Returned))
+     || CheckName := Returned <:- Checks
+    ],
+    ?assertMatch(
+        #{health := degraded, checks := #{no_tuple := {unhealthy, _}}},
+        seki_health:check(h_invalid)
+    ),
+    [
+        ?assertEqual(
+            {unhealthy, #{error => {invalid_result, Returned}}},
+            seki_health:check_one(h_invalid, CheckName)
+        )
+     || CheckName := Returned <:- Checks
+    ],
+    ?assertEqual(Checker, whereis(h_invalid)),
+    gen_server:stop(h_invalid).
+
+returning(Returned) ->
+    fun() -> Returned end.
