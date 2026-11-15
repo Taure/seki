@@ -38,6 +38,8 @@ defp deps do
 end
 ```
 
+seki needs Erlang/OTP 28 or later. It is tested on OTP 28 and 29.
+
 ## Quick Start
 
 ### Rate Limiting
