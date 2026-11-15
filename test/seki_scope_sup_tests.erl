@@ -236,17 +236,20 @@ gossip_waits_for_a_scope_whose_name_is_taken() ->
     ok = killed(First),
     true = register(Scope, self()),
     ok = sys:resume(Gossip),
-    ?assertEqual(undefined, element(8, sys:get_state(Gossip))),
+    ?assertEqual(undefined, scope_monitor(sys:get_state(Gossip))),
     true = unregister(Scope),
     {ok, Second} = pg:start(Scope),
     try
         ok = member_again(Scope, {seki_limiter, waiting}, Gossip),
-        ?assert(is_reference(element(8, sys:get_state(Gossip)))),
+        ?assert(is_reference(scope_monitor(sys:get_state(Gossip)))),
         ?assertMatch({allow, _}, seki:check(waiting, user)),
         ?assertEqual(ok, seki:delete_limiter(waiting))
     after
         ok = gen_server:stop(Second)
     end.
+
+-spec scope_monitor(term()) -> term().
+scope_monitor(State) when is_tuple(State) -> element(8, State).
 
 %% The gossip process answers in turn, so asking it again is how to wait for
 %% it to have heard of its scope. Its state changes when it has joined again.

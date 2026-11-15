@@ -126,7 +126,7 @@ logged() ->
 a_start_without_gossip_leaves_no_table() ->
     Scope = seki_backend_pg_tests_scope,
     ok = seki_scope_sup:ensure(Scope),
-    Running = whereis(Scope),
+    Running = live(whereis(Scope)),
     ok = sys:suspend(Scope),
     Self = self(),
     Starter = spawn_link(fun() ->
@@ -145,6 +145,9 @@ a_start_without_gossip_leaves_no_table() ->
     ?assertMatch({error, {{no_scope, Scope}, _Child}}, Started),
     ?assertEqual([], [Tab || Tab <:- ets:all(), ets:info(Tab, name) =:= pg_test_8]),
     ?assertEqual([], supervisor:which_children(seki_gossip_sup)).
+
+-spec live(term()) -> pid().
+live(Process) when is_pid(Process) -> Process.
 
 joining(Scope) ->
     case process_info(Scope, message_queue_len) of

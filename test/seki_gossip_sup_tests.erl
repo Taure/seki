@@ -159,8 +159,11 @@ a_gossip_process_is_given_five_seconds_to_stop() ->
     {ok, Spec} = supervisor:get_childspec(Supervisor, Tab),
     ?assertEqual(
         #{restart => transient, shutdown => 5000, significant => true, type => worker},
-        maps:with([restart, shutdown, significant, type], Spec)
+        maps:with([restart, shutdown, significant, type], spec_map(Spec))
     ).
+
+-spec spec_map(term()) -> map().
+spec_map(Spec) when is_map(Spec) -> Spec.
 
 no_gossip_is_linked_while_the_supervisor_is_down() ->
     Registry = running(seki_limiter_registry),

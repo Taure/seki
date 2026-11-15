@@ -186,10 +186,10 @@ answer_with_deadline() ->
 %% deadline is that millisecond plus what the worker is allowed.
 allowed(Tab) ->
     Before = erlang:monotonic_time(millisecond),
-    {ok, Deadline} = seki_ets_worker:atomic_update(Tab, key, {?MODULE, conflict_once_step, []}),
-    case erlang:monotonic_time(millisecond) of
-        Before -> Deadline - Before;
-        _Later -> allowed(Tab)
+    Answer = seki_ets_worker:atomic_update(Tab, key, {?MODULE, conflict_once_step, []}),
+    case {Answer, erlang:monotonic_time(millisecond)} of
+        {{ok, Deadline}, Before} when is_integer(Deadline) -> Deadline - Before;
+        {{ok, _Deadline}, _Later} -> allowed(Tab)
     end.
 
 unusable_count_falls_back() ->
@@ -231,8 +231,11 @@ unpublished_worker_falls_back() ->
     end.
 
 published_as(Tab, Key) ->
-    Count = persistent_term:get({seki_ets_worker, count}),
+    Count = worker_count(persistent_term:get({seki_ets_worker, count})),
     {seki_ets_worker, erlang:phash2({Tab, Key}, Count) + 1}.
+
+-spec worker_count(term()) -> pos_integer().
+worker_count(Count) when is_integer(Count), Count > 0 -> Count.
 
 -spec workers() -> [pid()].
 workers() ->
