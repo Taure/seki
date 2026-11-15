@@ -147,13 +147,10 @@ is_atomic(Backend) ->
     _ = code:ensure_loaded(Backend),
     erlang:function_exported(Backend, atomic_update, 3).
 
-%% A table name is an atom, and making one from a term that is not would
-%% create an atom per limiter. Such a limiter gets one shared label for its
-%% (unnamed) table and is told apart by its `pg` group instead.
-backend_defaults(Name) when is_atom(Name) ->
-    #{table_name => list_to_atom("seki_limiter_" ++ atom_to_list(Name))};
+%% Every limiter labels its (unnamed) table alike and is told apart by its
+%% `pg` group, which holds the name as it is: nothing is made into an atom.
 backend_defaults(Name) ->
-    #{table_name => seki_limiter, group => {seki_limiters, Name}}.
+    #{table_name => seki_limiter, group => {seki_limiter, Name}}.
 
 build_config(token_bucket, Opts) ->
     #{

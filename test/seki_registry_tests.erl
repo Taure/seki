@@ -30,7 +30,9 @@ registry_test_() ->
             fun an_adaptive_limiter_is_named_by_a_term/0,
             fun a_health_checker_is_named_by_a_term/0,
             fun a_limiter_is_named_by_a_term/0,
-            fun a_distributed_limiter_named_by_a_term_has_its_own_group/0,
+            fun a_distributed_limiter_has_its_own_group/0,
+            fun a_distributed_limiter_keeps_the_group_it_is_given/0,
+            fun naming_a_limiter_by_an_atom_creates_no_atom/0,
             fun a_named_process_restarts_under_its_name/0,
             fun a_call_reaches_a_process_by_its_pid/0,
             fun a_cast_reaches_a_process_by_its_pid/0,
@@ -300,27 +302,59 @@ a_limiter_is_named_by_a_term() ->
     ?assertError({limiter_not_found, Name}, seki:check(Name, user)),
     ?assertMatch({allow, _}, seki:check(Other, user)).
 
-a_distributed_limiter_named_by_a_term_has_its_own_group() ->
+a_distributed_limiter_has_its_own_group() ->
     Opts = #{
         algorithm => sliding_window,
         limit => 5,
         window => 60000,
         backend => seki_backend_pg
     },
-    ?assertEqual(ok, seki:new_limiter({pg_limiter, 1}, Opts)),
-    ?assertEqual(ok, seki:new_limiter({pg_limiter, 2}, Opts)),
-    ?assertEqual(ok, seki:new_limiter(seki_registry_tests_pg, Opts)),
-    ?assertMatch([_], pg:get_local_members(seki_pg, {seki_limiters, {pg_limiter, 1}})),
-    ?assertMatch([_], pg:get_local_members(seki_pg, {seki_limiters, {pg_limiter, 2}})),
-    ?assertMatch(
-        [_],
-        pg:get_local_members(seki_pg, {seki_limiters, seki_limiter_seki_registry_tests_pg})
+    Names = [{pg_limiter, 1}, {pg_limiter, 2}, seki_registry_tests_pg, ~"pg"],
+    [?assertEqual(ok, seki:new_limiter(Name, Opts)) || Name <:- Names],
+    [
+        ?assertMatch([_], pg:get_local_members(seki_pg, {seki_limiter, Name}))
+     || Name <:- Names
+    ],
+    ?assertEqual(
+        lists:sort([{seki_limiter, Name} || Name <:- Names]),
+        lists:sort(pg:which_groups(seki_pg))
     ),
     ?assertMatch({allow, _}, seki:check({pg_limiter, 1}, user)),
+    ?assertMatch({allow, _}, seki:check(seki_registry_tests_pg, user)),
+    [seki:delete_limiter(Name) || Name <:- Names].
+
+a_distributed_limiter_keeps_the_group_it_is_given() ->
+    Opts = #{
+        algorithm => sliding_window,
+        limit => 5,
+        window => 60000,
+        backend => seki_backend_pg
+    },
+    Given = [
+        {seki_registry_tests_given, seki_registry_tests_group},
+        {{given, 1}, {a, group}},
+        {{given, 2}, {seki_limiters, seki_limiter_given}}
+    ],
     [
-        seki:delete_limiter(Name)
-     || Name <:- [{pg_limiter, 1}, {pg_limiter, 2}, seki_registry_tests_pg]
-    ].
+        ?assertEqual(ok, seki:new_limiter(Name, Opts#{backend_opts => #{group => Group}}))
+     || {Name, Group} <:- Given
+    ],
+    [?assertMatch([_], pg:get_local_members(seki_pg, Group)) || {_Name, Group} <:- Given],
+    ?assertEqual(
+        lists:sort([Group || {_Name, Group} <:- Given]),
+        lists:sort(pg:which_groups(seki_pg))
+    ),
+    [seki:delete_limiter(Name) || {Name, _Group} <:- Given].
+
+naming_a_limiter_by_an_atom_creates_no_atom() ->
+    Name = seki_registry_tests_names_no_atom,
+    Opts = #{algorithm => token_bucket, limit => 1, window => 1000},
+    ?assertEqual(ok, seki:new_limiter(Name, Opts)),
+    ?assertEqual(ok, seki:new_limiter({pg, Name}, Opts#{backend => seki_backend_pg})),
+    ?assertMatch({allow, _}, seki:check(Name, user)),
+    ?assertError(
+        badarg, binary_to_existing_atom(<<"seki_limiter_", (atom_to_binary(Name))/binary>>)
+    ).
 
 a_named_process_restarts_under_its_name() ->
     Name = {bulkhead, restarts},

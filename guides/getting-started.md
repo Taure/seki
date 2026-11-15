@@ -247,6 +247,25 @@ by, where it used to be an atom. A handler that assumes an atom
 term name, and `telemetry` then detaches it from every event it was attached
 to. Print the name with `inspect/1` or `~p`.
 
+A limiter on the `seki_backend_pg` backend gossips in the `pg` group
+`{seki_limiter, Name}`. Up to 0.5 the group was `{seki_limiters, TableName}`,
+with a table name made from the limiter's name. During a rolling upgrade the
+nodes on 0.5 and the nodes on 0.6 are therefore in different groups: each side
+counts on its own, and a client can be let through up to the limit on both,
+until every node runs 0.6. A limiter given its own `group` in `backend_opts`
+keeps that group and is not affected. If you cannot accept the looser limit
+during the deploy, set `group` to the old value on the 0.6 nodes for one
+release:
+
+```erlang
+backend_opts => #{group => {seki_limiters, seki_limiter_api_limit}}
+```
+
+The ETS table of a limiter named by an atom is no longer labelled
+`seki_limiter_<name>`: every limiter's table is labelled `seki_limiter`. The
+tables were never named tables, so only `ets:info(Tab, name)` and tools such
+as Observer show the difference.
+
 The log lines that carry a name are now structured reports, for example
 `#{msg => bulkhead_full, name => db_pool, max_concurrent => 25}`, where they
 were formatted strings.

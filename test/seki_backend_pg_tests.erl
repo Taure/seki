@@ -362,7 +362,7 @@ other_algorithm_is_ignored() ->
     ?assertEqual(not_found, Result).
 
 capture_gossip(Name, Gossip, Algorithm) ->
-    Group = {seki_limiters, list_to_atom("seki_limiter_" ++ atom_to_list(Name))},
+    Group = {seki_limiter, Name},
     ok = pg:join(seki_pg, Group, self()),
     try
         Gossip ! gossip,

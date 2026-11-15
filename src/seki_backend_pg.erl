@@ -21,9 +21,10 @@ suits most rate limiting use cases.
 ## Options
 
 - `scope`: pg scope atom (default: `seki_pg`)
-- `group`: pg group (default: `{seki_limiters, TableName}`, one group per
-  limiter). Limiters that share a group merge each other's keys, so give each
-  limiter its own group.
+- `group`: pg group. A limiter created with `seki:new_limiter/2` defaults to
+  `{seki_limiter, Name}`, its own group; a backend started on its own defaults
+  to `{seki_limiters, TableName}`. Limiters that share a group merge each
+  other's keys, so give each limiter its own group.
 - `gossip_interval`: broadcast interval in ms (default: 1000)
 """.
 
