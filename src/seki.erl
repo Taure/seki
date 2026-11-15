@@ -29,6 +29,13 @@ each:
 
 A process named by an atom is registered under it, as `whereis/1` shows. One
 named by any other term is found through seki only.
+
+A tuple is always a name on this node. `{Name, Node}` is not read as the
+process `Name` on `Node`: to use a breaker on another node, call that node.
+
+A pid is not a name: `new_breaker/2` and the other `new_*` functions return
+`{error, {invalid_name, Pid}}` for one. The pid they return is accepted in
+place of the name by every function that calls the process.
 """.
 
 %% Rate limiter API
@@ -75,7 +82,7 @@ named by any other term is found through seki only.
 
 -doc """
 The name of a limiter, breaker, bulkhead, load shedder, adaptive limiter or
-health checker: any term.
+health checker: any term but a pid.
 """.
 -type name() :: term().
 -type limiter_name() :: name().

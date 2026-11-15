@@ -27,6 +27,8 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 -spec register(seki:name(), seki:limiter_opts()) -> ok | {error, term()}.
+register(Pid, _Opts) when is_pid(Pid) ->
+    {error, {invalid_name, Pid}};
 register(Name, Opts) ->
     gen_server:call(?MODULE, {register, Name, Opts}).
 

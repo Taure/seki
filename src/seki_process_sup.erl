@@ -15,6 +15,8 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 -spec start_child(module(), seki:name(), map()) -> {ok, pid()} | {error, term()}.
+start_child(_Module, Pid, _Opts) when is_pid(Pid) ->
+    {error, {invalid_name, Pid}};
 start_child(Module, Name, Opts) ->
     ChildSpec = #{
         id => Name,

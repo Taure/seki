@@ -15,6 +15,8 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 -spec start_breaker(seki:name(), seki:breaker_opts()) -> {ok, pid()} | {error, term()}.
+start_breaker(Pid, _Opts) when is_pid(Pid) ->
+    {error, {invalid_name, Pid}};
 start_breaker(Name, Opts) ->
     ChildSpec = #{
         id => Name,

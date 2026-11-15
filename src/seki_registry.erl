@@ -33,11 +33,12 @@ keeper_restarted() ->
 %% What a process named `Name` is started with.
 -spec registration(term()) -> {local, atom()} | via().
 registration(Name) when is_atom(Name) -> {local, Name};
-registration(Name) -> {via, ?MODULE, Name}.
+registration(Name) when not is_pid(Name) -> {via, ?MODULE, Name}.
 
 %% What a process named `Name` is called with.
--spec server(term()) -> atom() | via().
+-spec server(term()) -> atom() | pid() | via().
 server(Name) when is_atom(Name) -> Name;
+server(Pid) when is_pid(Pid) -> Pid;
 server(Name) -> {via, ?MODULE, Name}.
 
 -spec register_name(term(), pid()) -> yes | no.

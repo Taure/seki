@@ -31,6 +31,10 @@ registry_test_() ->
             fun a_limiter_is_named_by_a_term/0,
             fun a_distributed_limiter_named_by_a_term_has_its_own_group/0,
             fun a_named_process_restarts_under_its_name/0,
+            fun a_call_reaches_a_process_by_its_pid/0,
+            fun a_cast_reaches_a_process_by_its_pid/0,
+            fun a_pid_is_not_a_name/0,
+            fun a_tuple_is_a_name_and_not_a_node/0,
             fun naming_by_terms_creates_no_atoms/0,
             fun nothing_is_registered_while_seki_is_stopped/0
         ]}.
@@ -305,6 +309,65 @@ a_named_process_restarts_under_its_name() ->
     Second = restarted(Name, First),
     ?assertNotEqual(First, Second),
     ?assertEqual({ok, done}, seki_bulkhead:call(Name, fun() -> done end)).
+
+a_call_reaches_a_process_by_its_pid() ->
+    ?assertEqual(self(), seki_registry:server(self())),
+    {ok, Breaker} = seki:new_breaker({breaker, pid}, #{}),
+    ?assertEqual(closed, seki:state(Breaker)),
+    ?assertEqual({ok, 42}, seki:call(Breaker, fun() -> 42 end)),
+    {ok, Bulkhead} = seki:new_bulkhead(seki_registry_tests_pid, #{max_concurrent => 1}),
+    ?assertMatch(#{current := 0, max := 1}, seki_bulkhead:status(Bulkhead)),
+    ?assertEqual({ok, done}, seki_bulkhead:call(Bulkhead, fun() -> done end)),
+    {ok, Shed} = seki:new_shed({shed, pid}, #{}),
+    ?assertEqual(ok, seki_shed:admit(Shed)),
+    ?assertMatch(#{in_flight := 1}, seki_shed:status(Shed)),
+    {ok, Adaptive} = seki:new_adaptive({adaptive, pid}, #{}),
+    ?assertEqual({ok, hello}, seki_adaptive:call(Adaptive, fun() -> hello end)),
+    {ok, Health} = seki:new_health({health, pid}, #{vm_checks => false}),
+    ?assertEqual(ok, seki_health:readiness(Health)).
+
+a_cast_reaches_a_process_by_its_pid() ->
+    {ok, Breaker} = seki:new_breaker({breaker, pid}, #{window_size => 5, wait_duration => 60000}),
+    [seki:call({breaker, pid}, fun() -> {error, down} end) || _ <:- lists:seq(1, 5)],
+    ?assertEqual(open, seki:state({breaker, pid})),
+    ?assertEqual(ok, seki:reset_breaker(Breaker)),
+    ?assertEqual(closed, seki:state({breaker, pid})),
+    {ok, Bulkhead} = seki:new_bulkhead({bulkhead, pid}, #{max_concurrent => 1}),
+    ?assertEqual(ok, seki_bulkhead:acquire({bulkhead, pid})),
+    ?assertEqual(ok, seki_bulkhead:release(Bulkhead)),
+    ?assertMatch(#{current := 0}, seki_bulkhead:status({bulkhead, pid})),
+    {ok, Shed} = seki:new_shed({shed, pid}, #{}),
+    ?assertEqual(ok, seki_shed:admit({shed, pid})),
+    ?assertEqual(ok, seki_shed:complete(Shed, 1)),
+    ?assertMatch(#{in_flight := 0}, seki_shed:status({shed, pid})),
+    {ok, Adaptive} = seki:new_adaptive({adaptive, pid}, #{}),
+    ?assertEqual(ok, seki_adaptive:acquire({adaptive, pid})),
+    ?assertEqual(ok, seki_adaptive:release(Adaptive, ok)),
+    ?assertMatch(#{in_flight := 0}, seki_adaptive:status({adaptive, pid})).
+
+a_pid_is_not_a_name() ->
+    Invalid = {error, {invalid_name, self()}},
+    ?assertEqual(Invalid, seki:new_breaker(self(), #{})),
+    ?assertEqual(Invalid, seki:new_bulkhead(self(), #{})),
+    ?assertEqual(Invalid, seki:new_shed(self(), #{})),
+    ?assertEqual(Invalid, seki:new_adaptive(self(), #{})),
+    ?assertEqual(Invalid, seki:new_health(self(), #{})),
+    ?assertEqual(
+        Invalid,
+        seki:new_limiter(self(), #{algorithm => token_bucket, limit => 1, window => 1000})
+    ),
+    ?assertError(function_clause, seki_registry:registration(self())),
+    ?assertEqual([], supervisor:which_children(seki_breaker_sup)),
+    ?assertEqual([], supervisor:which_children(seki_process_sup)),
+    ?assertEqual([], ets:tab2list(seki_registry)),
+    ?assertError({limiter_not_found, _}, seki:check(self(), user)).
+
+a_tuple_is_a_name_and_not_a_node() ->
+    {ok, _} = seki:new_breaker(seki_registry_tests_local, #{}),
+    ?assertExit({noproc, _}, seki:state({seki_registry_tests_local, node()})),
+    {ok, Named} = seki:new_breaker({seki_registry_tests_local, node()}, #{}),
+    ?assertNotEqual(Named, whereis(seki_registry_tests_local)),
+    ?assertEqual(closed, seki:state({seki_registry_tests_local, node()})).
 
 naming_by_terms_creates_no_atoms() ->
     %% Whatever these calls load is loaded by the first round.

@@ -158,6 +158,12 @@ seki:call({payments, TenantId}, fun() -> charge(TenantId) end).
 A process named by an atom is registered under that atom. One named by another
 term is reached through seki's functions only.
 
+A tuple is always a name on this node: `{Name, Node}` does not reach the
+process `Name` on `Node`. A pid is not a name, and `seki:new_breaker/2` and the
+other `new_*` functions return `{error, {invalid_name, Pid}}` for one. The pid
+they return can be passed in place of the name to any function that calls the
+process.
+
 Every name is a process, and seki does not limit how many there are. A name
 made from a value a client chooses (a tenant id read from a request, an IP
 address, a header) lets that client start one process per value it sends. Make
@@ -187,6 +193,17 @@ end, %{})
 
 For OpenTelemetry integration, call `seki_otel:setup()` to automatically add span
 events for all seki operations.
+
+## Upgrading to 0.6
+
+A tuple passed as a name is now a name on this node. Up to 0.5,
+`seki:call({my_breaker, Node}, Fun)` reached the breaker `my_breaker` on
+`Node`. From 0.6 it looks for a local breaker named `{my_breaker, Node}` and
+exits with `noproc` when there is none. The same holds for bulkheads, load
+shedders, adaptive limiters and health checkers, and their casts
+(`seki:reset_breaker/1`, `seki_bulkhead:release/1`, `seki_shed:complete/2`,
+`seki_adaptive:release/2`) return `ok` and do nothing. To use a process on
+another node, call that node, for example with `erpc:call/4`.
 
 ## Next Steps
 
