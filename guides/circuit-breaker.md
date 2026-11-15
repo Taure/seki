@@ -112,6 +112,10 @@ Use a custom classifier to be more selective:
 This is useful when 4xx errors (client mistakes) should not count against the service
 health, while 5xx errors (service failures) should.
 
+The classifier must return `true` or `false` for every result. A call whose
+classifier raises, or returns anything else, counts as a failure and is logged
+as a warning; the breaker keeps running.
+
 ## Slow Call Detection
 
 The breaker tracks calls that take longer than `slow_call_duration`. When the

@@ -12,6 +12,8 @@ Typically used via `seki:call/2` rather than directly.
 
 -behaviour(gen_statem).
 
+-include_lib("kernel/include/logger.hrl").
+
 %% API
 -export([
     start_link/2,
@@ -40,7 +42,7 @@ Typically used via `seki:call/2` rather than directly.
     slow_call_duration :: pos_integer(),
     wait_duration :: pos_integer(),
     half_open_requests :: pos_integer(),
-    error_classifier :: fun((term()) -> boolean()),
+    error_classifier :: fun((term()) -> term()),
     %% State tracking
     outcomes :: queue:queue({ok | error | slow, integer()}),
     outcome_count :: non_neg_integer(),
@@ -110,12 +112,7 @@ closed({call, From}, {call, Fun}, Data) ->
     try Fun() of
         Result ->
             Duration = erlang:monotonic_time(millisecond) - Start,
-            Outcome =
-                case Classifier(Result) of
-                    true -> error;
-                    false when Duration >= SlowDuration -> slow;
-                    false -> ok
-                end,
+            Outcome = outcome(Name, Classifier, Result, Duration, SlowDuration),
             emit_call_telemetry(Name, closed, Outcome, Duration),
             NewData = record_outcome(Outcome, Data),
             case should_trip(NewData) of
@@ -209,12 +206,7 @@ half_open({call, From}, {call, Fun}, Data) ->
             try Fun() of
                 Result ->
                     Duration = erlang:monotonic_time(millisecond) - Start,
-                    Outcome =
-                        case Classifier(Result) of
-                            true -> error;
-                            false when Duration >= SlowDuration -> slow;
-                            false -> ok
-                        end,
+                    Outcome = outcome(Name, Classifier, Result, Duration, SlowDuration),
                     emit_call_telemetry(Name, half_open, Outcome, Duration),
                     NewData2 = record_outcome(Outcome, NewData),
                     case Outcome of
@@ -273,6 +265,36 @@ terminate(_Reason, _State, _Data) ->
 %%----------------------------------------------------------------------
 %% Internal - Outcome tracking
 %%----------------------------------------------------------------------
+
+outcome(Name, Classifier, Result, Duration, SlowDuration) ->
+    case is_error(Name, Classifier, Result) of
+        true -> error;
+        false when Duration >= SlowDuration -> slow;
+        false -> ok
+    end.
+
+%% A classifier that raises, or returns anything but a boolean, cannot say the
+%% call succeeded, and the breaker must outlive it: the result is an error.
+is_error(Name, Classifier, Result) ->
+    try Classifier(Result) of
+        false ->
+            false;
+        true ->
+            true;
+        _NotBoolean ->
+            ?LOG_WARNING(
+                #{msg => error_classifier_returned_no_boolean, name => Name},
+                #{domain => [seki]}
+            ),
+            true
+    catch
+        Class:Reason ->
+            ?LOG_WARNING(
+                #{msg => error_classifier_raised, name => Name, class => Class, reason => Reason},
+                #{domain => [seki]}
+            ),
+            true
+    end.
 
 record_outcome(Outcome, #data{window_type = count, window_size = Size} = Data) ->
     #data{outcomes = Q, outcome_count = Count} = Data,

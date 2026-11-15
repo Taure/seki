@@ -198,7 +198,11 @@ classifier_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"custom classifier determines failures", fun custom_classifier/0},
         {"default classifier treats {error,_} as failure", fun default_classifier/0},
-        {"default classifier treats error atom as failure", fun default_classifier_atom/0}
+        {"default classifier treats error atom as failure", fun default_classifier_atom/0},
+        {"a classifier that raises counts an error", fun raising_classifier/0},
+        {"a classifier that returns no boolean counts an error", fun non_boolean_classifier/0},
+        {"a probe whose classifier raises reopens", fun raising_classifier_half_open/0},
+        {"raising classifiers leave the other breakers alone", fun raising_classifiers_many/0}
     ]}.
 
 custom_classifier() ->
@@ -257,6 +261,75 @@ default_classifier_atom() ->
     ),
     ?assertEqual(open, seki:state(br_def_atom)),
     seki:delete_breaker(br_def_atom).
+
+raising_classifier() ->
+    {ok, Breaker} = seki:new_breaker(br_cls_raise, #{
+        window_size => 5,
+        failure_threshold => 50,
+        wait_duration => 60000,
+        error_classifier => fun partial_classifier/1
+    }),
+    {ok, ok} = seki:call(br_cls_raise, fun() -> ok end),
+    [
+        ?assertEqual({ok, unexpected}, seki:call(br_cls_raise, fun() -> unexpected end))
+     || _ <:- lists:seq(1, 4)
+    ],
+    ?assertEqual(Breaker, whereis(br_cls_raise)),
+    ?assertEqual(open, seki:state(br_cls_raise)),
+    seki:delete_breaker(br_cls_raise).
+
+non_boolean_classifier() ->
+    {ok, Breaker} = seki:new_breaker(br_cls_maybe, #{
+        window_size => 5,
+        failure_threshold => 50,
+        wait_duration => 60000,
+        error_classifier => fun(Result) -> Result end
+    }),
+    {ok, false} = seki:call(br_cls_maybe, fun() -> false end),
+    [
+        ?assertEqual({ok, sometimes}, seki:call(br_cls_maybe, fun() -> sometimes end))
+     || _ <:- lists:seq(1, 4)
+    ],
+    ?assertEqual(Breaker, whereis(br_cls_maybe)),
+    ?assertEqual(open, seki:state(br_cls_maybe)),
+    seki:delete_breaker(br_cls_maybe).
+
+raising_classifier_half_open() ->
+    {ok, Breaker} = seki:new_breaker(br_cls_probe, #{
+        window_size => 5,
+        failure_threshold => 50,
+        wait_duration => 50,
+        error_classifier => fun partial_classifier/1
+    }),
+    [seki:call(br_cls_probe, fun() -> {error, down} end) || _ <:- lists:seq(1, 5)],
+    timer:sleep(100),
+    ?assertEqual(half_open, seki:state(br_cls_probe)),
+    ?assertEqual({ok, unexpected}, seki:call(br_cls_probe, fun() -> unexpected end)),
+    ?assertEqual(Breaker, whereis(br_cls_probe)),
+    ?assertEqual(open, seki:state(br_cls_probe)),
+    seki:delete_breaker(br_cls_probe).
+
+raising_classifiers_many() ->
+    Supervisor = whereis(seki_breaker_sup),
+    {ok, Open} = seki:new_breaker(br_cls_open, #{window_size => 5, wait_duration => 60000}),
+    [seki:call(br_cls_open, fun() -> {error, down} end) || _ <:- lists:seq(1, 5)],
+    ?assertEqual(open, seki:state(br_cls_open)),
+    Tenants = [{br_cls_tenant, Number} || Number <:- lists:seq(1, 25)],
+    [
+        begin
+            {ok, _} = seki:new_breaker(Tenant, #{error_classifier => fun partial_classifier/1}),
+            ?assertEqual({ok, unexpected}, seki:call(Tenant, fun() -> unexpected end))
+        end
+     || Tenant <:- Tenants
+    ],
+    ?assertEqual(Supervisor, whereis(seki_breaker_sup)),
+    ?assertEqual(Open, whereis(br_cls_open)),
+    ?assertEqual(open, seki:state(br_cls_open)),
+    ?assertEqual(26, length(supervisor:which_children(seki_breaker_sup))),
+    [seki:delete_breaker(Name) || Name <:- [br_cls_open | Tenants]].
+
+partial_classifier({error, _}) -> true;
+partial_classifier(ok) -> false.
 
 %%----------------------------------------------------------------------
 %% Exception Handling Tests
