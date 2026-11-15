@@ -27,7 +27,7 @@ start_child(Module, Name, Opts) ->
         shutdown => 5000
     },
     case supervisor:start_child(?MODULE, ChildSpec) of
-        {ok, Pid} = Ok ->
+        {ok, Pid} = Ok when is_pid(Pid) ->
             ?LOG_INFO(
                 #{
                     msg => process_started,

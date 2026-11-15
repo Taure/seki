@@ -24,7 +24,10 @@ start_breaker(Name, Opts) ->
         restart => transient,
         shutdown => 5000
     },
-    supervisor:start_child(?MODULE, ChildSpec).
+    case supervisor:start_child(?MODULE, ChildSpec) of
+        {ok, Breaker} when is_pid(Breaker) -> {ok, Breaker};
+        {error, Reason} -> {error, Reason}
+    end.
 
 -spec stop_breaker(seki:name()) -> ok | {error, term()}.
 stop_breaker(Name) ->
