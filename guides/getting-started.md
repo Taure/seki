@@ -205,7 +205,12 @@ stopped, raises, and the function you passed is not run:
 | `seki:reset_breaker/1`, `seki_bulkhead:release/1`, `seki_shed:complete/2`, `seki_adaptive:release/2` | returns `ok`, does nothing | returns `ok`, does nothing |
 
 A name whose process crashed more than 3 times in 10 seconds is an unknown
-name from then on, and every row above holds for it. A breaker that was open
+name from then on, and every row above holds for it. A process that stopped
+without crashing, for example one stopped with `gen_statem:stop/1`, is not
+started again but keeps its name: calls exit with `{noproc, _}` and
+`seki:new_breaker/2` or the other `new_*` function returns
+`{error, already_present}`, until the name is deleted with
+`seki:delete_breaker/1` or the other `delete_*` function. A breaker that was open
 when that happened is open when it is created again
 (see [When a Name Gives Up](architecture.md#when-a-name-gives-up)).
 
@@ -339,9 +344,54 @@ the process that holds the limiters. Up to 0.5 a gossip process that died took
 every limiter on the node with it. From 0.6 it is restarted and no limiter is
 lost. `seki_backend_pg` starts its `pg` scope under seki's supervisor, so the
 scope stops when seki stops; a scope that is already running is used as it
-is. A `scope` that is the registered name of something else returns
-`{error, {backend_failed, {invalid_option, scope}}}` from
-`seki:new_limiter/2`. See [Architecture](architecture.md) for the whole tree.
+is, and is left to whoever started it: when it stops, seki waits for it to be
+started again and joins it then. A `scope` that is the registered name of
+something else returns `{error, {backend_failed, {invalid_option, scope}}}`
+from `seki:new_limiter/2`. See [Architecture](architecture.md) for the whole
+tree.
+
+A breaker with a count window (`window_type => count`, the default) and a
+`window_size` below 5 now trips once its window is full and enough of the
+calls in it failed. Up to
+0.5 it never tripped, whatever failed, because it waited for five outcomes
+and its window never held that many. Look at the breakers you create with a
+small `window_size` before you upgrade: they can open for the first time.
+
+Each name is now two processes, the process and its supervisor, and takes
+about 7 KB where it took about 3 KB. Creating 100,000 names takes about two
+seconds and stopping seki with them about one.
+
+Limiter state is cleaned up differently:
+
+- A `gcra` limiter forgets a key once the key is free again. Up to 0.5 it
+  kept one value for every key it had ever seen.
+- A limiter with a window longer than five minutes keeps a key for two
+  windows after it was last seen. Up to 0.5 every key was forgotten ten
+  minutes after it was last seen, which handed a client of such a limiter
+  its whole limit again.
+- A backend of your own is asked for the optional `cleanup_arrivals/1` to do
+  the first of these (see `m:seki_backend`).
+
+Also changed:
+
+- seki needs OTP 28 or later.
+- An `error_classifier` that raises, or returns something that is not a
+  boolean, counts as an error and is logged. Up to 0.5 it crashed the breaker.
+- A health checker with the default `vm_checks` reports `vm_memory` as
+  healthy. Up to 0.5 that check always failed, so the checker was never better
+  than `degraded`.
+- A health check that returns something other than `{Health, Details}` is
+  reported as `{unhealthy, #{error => {invalid_result, Returned}}}`. Up to 0.5
+  it crashed the health checker.
+- A seki process answers a call it does not know with
+  `{error, unknown_request}` and drops a message it does not know, logging the
+  first. Up to 0.5 it crashed.
+- The processes `seki_registry`, `seki_registry_keeper`, `seki_registry_sup`,
+  `seki_scope_sup` and `seki_gossip_sup` are registered, and the ETS tables
+  `seki_registry` and `seki_breaker_trips` are named. The processes
+  `seki_ets_worker_1` to `seki_ets_worker_N` are no longer registered.
+- A span of `seki_otel` carries a name that is not an atom, a number or a
+  short binary as printed text.
 
 ## Next Steps
 

@@ -179,7 +179,9 @@ during a rolling upgrade old and new nodes enforce their limits independently
 until every node runs the new version.
 
 seki starts the `pg` scope under its own supervisor unless a scope of that
-name is already running. The gossip process of a limiter is supervised too and
+name is already running. A scope your application started stays yours: seki
+never starts it, and when it stops the limiter counts on its own node until
+you have started it again. The gossip process of a limiter is supervised too and
 is not linked to the limiters: if it dies it is restarted on the same table,
 and no limiter is lost (see [Architecture](architecture.md#what-is-kept)).
 

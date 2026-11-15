@@ -98,6 +98,9 @@ is restarted open.
   seconds it is not restarted again: the limiter keeps counting on this node
   and stops sharing its state until it is deleted and created again. When its
   `pg` scope is restarted, the gossip process joins its group again. A scope
+  the application started itself is never started by seki: the gossip process
+  logs `gossip_scope_down` and looks every 100 ms until the application has
+  started it again. A scope
   that crashes more than 10 times in 60 seconds takes the supervisor of the
   scopes with it; that supervisor is restarted empty, and each gossip process
   starts the scope it needs again, trying every 100 ms until it has joined.
