@@ -28,6 +28,8 @@ token_bucket_test_() ->
             fun first_call_or_cast_dropped_is_logged/0},
         {"a backend without atomic updates is refused unless asked for",
             fun non_atomic_backend_is_refused/0},
+        {"the periodic cleanup removes what is older than ten minutes",
+            fun cleanup_keeps_ten_minutes/0},
         {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"a backend that fails to start is refused", fun failing_backend_is_refused/0},
         {"a backend that fails later is outlived", fun failing_backend_is_outlived/0},
@@ -724,6 +726,18 @@ non_atomic_backend_is_refused() ->
     ?assertMatch({allow, _}, seki:check(lim_plain, user)),
     ?assertMatch({deny, _}, seki:check(lim_plain, user)),
     seki:delete_limiter(lim_plain).
+
+cleanup_keeps_ten_minutes() ->
+    ok = seki:new_limiter(lim_swept, #{algorithm => gcra, limit => 1, window => 1000}),
+    {gcra, seki_backend_ets, Tab, _Config} = seki_limiter_registry:lookup(lim_swept),
+    Now = erlang:monotonic_time(millisecond),
+    ok = seki_backend_ets:put(Tab, eleven_minutes, {1, Now - 630000}),
+    ok = seki_backend_ets:put(Tab, nine_minutes, {1, Now - 570000}),
+    seki_limiter_registry ! cleanup,
+    _ = sys:get_state(seki_limiter_registry),
+    ?assertEqual(not_found, seki_backend_ets:get(Tab, eleven_minutes)),
+    ?assertEqual({ok, {1, Now - 570000}}, seki_backend_ets:get(Tab, nine_minutes)),
+    seki:delete_limiter(lim_swept).
 
 invalid_options_are_refused() ->
     Kept = kept_limiter(lim_kept_invalid),
