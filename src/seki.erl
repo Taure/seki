@@ -39,8 +39,8 @@ place of the name by every function that calls the process.
 
 ## Options
 
-`new_breaker/2` and the other `new_*` functions check their options before
-they start anything. An option of the wrong kind, such as
+`new_limiter/2`, `new_breaker/2` and the other `new_*` functions check their
+options before they start anything. An option of the wrong kind, such as
 `window_size => 0`, returns `{error, {invalid_option, window_size}}`, and
 options that are not a map return `{error, invalid_options}`. A key that seki
 does not know is ignored.
@@ -153,6 +153,12 @@ Returns `{error, already_registered}` if the name is taken, and
 `atomic_update/3`. Such a backend checks with `get/2` then `put/3`, so
 concurrent checks of one key can exceed the limit; pass
 `allow_non_atomic => true` to use it anyway.
+
+The options are checked first: one of the wrong kind returns
+`{error, {invalid_option, Key}}`, and a missing `algorithm`, `limit` or
+`window` returns `{error, {missing_option, Key}}`. A backend that cannot
+start returns `{error, {backend_failed, Reason}}`. In each case no limiter is
+created and the other limiters are not affected.
 """.
 -spec new_limiter(limiter_name(), limiter_opts()) -> ok | {error, term()}.
 new_limiter(Name, Opts) ->

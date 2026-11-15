@@ -283,6 +283,14 @@ the wrong kind, for example `max_concurrent => infinity` or
 `failure_threshold => 150`, returns `{error, {invalid_option, Key}}` where it
 used to start a process that died, or never tripped, when it was first used.
 
+`seki:new_limiter/2` checks its options too, and no longer raises on a bad
+one. `limit => 0`, an unknown `algorithm` or a missing `window` returns
+`{error, {invalid_option, Key}}` or `{error, {missing_option, Key}}`, and a
+backend that cannot start, for example `seki_backend_pg` with
+`gossip_interval => 0`, returns `{error, {backend_failed, Reason}}`. Up to 0.5
+each of these stopped the process that holds the limiters, and every limiter
+on the node was lost with it.
+
 The log lines that carry a name are now structured reports, for example
 `#{msg => bulkhead_full, name => db_pool, max_concurrent => 25}`, where they
 were formatted strings.

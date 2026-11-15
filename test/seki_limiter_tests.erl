@@ -24,6 +24,9 @@ token_bucket_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"allows requests within limit", fun token_bucket_allow/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
+        {"a backend that fails to start is refused", fun failing_backend_is_refused/0},
+        {"a backend that fails later is outlived", fun failing_backend_is_outlived/0},
         {"denies requests over limit", fun token_bucket_deny/0},
         {"inspect does not consume", fun token_bucket_inspect/0},
         {"remaining decreases with each request", fun token_bucket_remaining/0},
@@ -669,3 +672,103 @@ unexpected_messages_are_dropped() ->
     ),
     ?assertMatch({allow, _}, seki:check(lim_stray, user)),
     seki:delete_limiter(lim_stray).
+
+invalid_options_are_refused() ->
+    Kept = kept_limiter(lim_kept_invalid),
+    Valid = maps:from_list([{algorithm, gcra}, {limit, 1}, {window, 1000}]),
+    [
+        ?assertEqual(
+            {error, {invalid_option, Key}},
+            seki:new_limiter(lim_invalid, maps:merge(Valid, option(Key, Value)))
+        )
+     || {Key, Value} <:- [
+            {algorithm, bogus},
+            {limit, 0},
+            {limit, 1.5},
+            {limit, unlimited},
+            {window, 0},
+            {window, forever},
+            {burst, 0},
+            {burst, big},
+            {backend, ~"seki_backend_ets"},
+            {backend_opts, []},
+            {allow_non_atomic, yes}
+        ]
+    ],
+    [
+        ?assertEqual(
+            {error, {missing_option, Key}},
+            seki:new_limiter(lim_invalid, maps:remove(Key, Valid))
+        )
+     || Key <:- [algorithm, limit, window]
+    ],
+    ?assertEqual(
+        {error, invalid_options},
+        gen_server:call(seki_limiter_registry, {register, lim_invalid, []})
+    ),
+    ?assertError({limiter_not_found, lim_invalid}, seki:check(lim_invalid, user)),
+    ?assertEqual(
+        ok, seki:new_limiter(lim_invalid, maps:merge(Valid, option(some_other_key, kept)))
+    ),
+    ?assertMatch({allow, _}, seki:check(lim_invalid, user)),
+    seki:delete_limiter(lim_invalid),
+    ok = still_running(Kept).
+
+failing_backend_is_refused() ->
+    Kept = kept_limiter(lim_kept_refused),
+    Opts = #{algorithm => gcra, limit => 1, window => 1000},
+    Tables = length(ets:all()),
+    [
+        ?assertMatch(
+            {error, {backend_failed, _}},
+            seki:new_limiter(lim_refused, Opts#{backend => Backend, backend_opts => BackendOpts})
+        )
+     || {Backend, BackendOpts} <:- [
+            {seki_failing_backend, #{fails => init}},
+            {seki_failing_backend, #{fails => init_result}},
+            {seki_backend_ets, #{table_name => ~"not an atom"}},
+            {seki_backend_pg, #{gossip_interval => never}},
+            {seki_backend_pg, #{gossip_interval => 0}},
+            {seki_backend_pg, #{scope => ~"not an atom"}},
+            {seki_backend_pg, #{table_name => ~"not an atom"}}
+        ]
+    ],
+    ?assertMatch(
+        {error, {backend_failed, _}},
+        seki:new_limiter(lim_refused, Opts#{backend => no_such_backend, allow_non_atomic => true})
+    ),
+    ?assertError({limiter_not_found, lim_refused}, seki:check(lim_refused, user)),
+    ?assertEqual(Tables, length(ets:all())),
+    ?assertEqual([], pg:which_groups(seki_pg)),
+    ok = still_running(Kept).
+
+failing_backend_is_outlived() ->
+    Kept = kept_limiter(lim_kept_outlived),
+    Opts = #{algorithm => gcra, limit => 1, window => 1000, backend => seki_failing_backend},
+    ok = seki:new_limiter(lim_cleanup, Opts#{backend_opts => #{fails => cleanup}}),
+    ok = seki:new_limiter(lim_terminate, Opts#{backend_opts => #{fails => terminate}}),
+    seki_limiter_registry ! cleanup,
+    ok = still_running(Kept),
+    ?assertMatch({allow, _}, seki:check(lim_cleanup, user)),
+    ?assertEqual(ok, seki:delete_limiter(lim_terminate)),
+    ?assertError({limiter_not_found, lim_terminate}, seki:check(lim_terminate, user)),
+    ?assertEqual(ok, seki:delete_limiter(lim_cleanup)),
+    ok = still_running(Kept),
+    ok = seki:new_limiter(lim_terminate, Opts#{backend_opts => #{fails => terminate}}),
+    {Registry, _Name} = Kept,
+    ?assertEqual(ok, gen_server:stop(Registry)).
+
+kept_limiter(Name) ->
+    ok = seki:new_limiter(Name, #{algorithm => token_bucket, limit => 5, window => 60000}),
+    {allow, _} = seki:check(Name, user),
+    {whereis(seki_limiter_registry), Name}.
+
+still_running({Registry, Name}) ->
+    _ = sys:get_state(seki_limiter_registry),
+    ?assertEqual(Registry, whereis(seki_limiter_registry)),
+    ?assertMatch({allow, #{remaining := _}}, seki:check(Name, user)),
+    ok.
+
+-spec option(atom(), term()) -> map().
+option(Key, Value) ->
+    #{Key => Value}.

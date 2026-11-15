@@ -22,6 +22,15 @@
 
 -define(REGISTRY_TAB, seki_limiter_registry).
 -define(CLEANUP_INTERVAL, 60000).
+-define(OPTION_KINDS, [
+    {algorithm, {one_of, [token_bucket, sliding_window, gcra, leaky_bucket]}},
+    {limit, pos_integer},
+    {window, pos_integer},
+    {burst, pos_integer},
+    {backend, atom},
+    {backend_opts, options},
+    {allow_non_atomic, boolean}
+]).
 
 -record(limiter, {
     name :: seki:name(),
@@ -79,28 +88,16 @@ init([]) ->
     {ok, #{}}.
 
 handle_call({register, Name, Opts}, _From, State) ->
-    case ets:lookup(?REGISTRY_TAB, Name) of
-        [_] ->
-            ?LOG_DEBUG(
-                #{msg => limiter_already_registered, name => seki_name:label(Name)},
-                #{domain => [seki]}
-            ),
-            {reply, {error, already_registered}, State};
-        [] ->
-            Backend = maps:get(backend, Opts, seki_backend_ets),
-            case is_atomic(Backend) orelse maps:get(allow_non_atomic, Opts, false) of
-                true ->
-                    {reply, ok, start_limiter(Name, Backend, Opts, State)};
-                false ->
-                    {reply, {error, {backend_not_atomic, Backend}}, State}
-            end
+    case seki_options:check(Opts, ?OPTION_KINDS, [algorithm, limit, window]) of
+        ok -> {reply, register_limiter(Name, Opts), State};
+        {error, Reason} -> {reply, {error, Reason}, State}
     end;
 handle_call({unregister, Name}, _From, State) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
-        [#limiter{backend = Backend, backend_state = BackendState}] ->
-            Backend:terminate(BackendState),
+        [#limiter{} = Limiter] ->
+            ok = backend_callback(Limiter, terminate, []),
             ets:delete(?REGISTRY_TAB, Name),
-            {reply, ok, maps:remove(Name, State)};
+            {reply, ok, State};
         [] ->
             {reply, ok, State}
     end;
@@ -121,30 +118,73 @@ handle_info(Message, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
-    _ = [
-        Backend:terminate(BackendState)
-     || #limiter{backend = Backend, backend_state = BackendState} <- ets:tab2list(?REGISTRY_TAB)
-    ],
+    _ = [backend_callback(Limiter, terminate, []) || Limiter <- ets:tab2list(?REGISTRY_TAB)],
     ok.
 
 %%----------------------------------------------------------------------
 %% Internal
 %%----------------------------------------------------------------------
 
-start_limiter(Name, Backend, Opts, State) ->
+register_limiter(Name, Opts) ->
+    Backend = maps:get(backend, Opts, seki_backend_ets),
+    case ets:member(?REGISTRY_TAB, Name) of
+        true ->
+            ?LOG_DEBUG(
+                #{msg => limiter_already_registered, name => seki_name:label(Name)},
+                #{domain => [seki]}
+            ),
+            {error, already_registered};
+        false ->
+            case is_atomic(Backend) orelse maps:get(allow_non_atomic, Opts, false) of
+                true -> start_limiter(Name, Backend, Opts);
+                false -> {error, {backend_not_atomic, Backend}}
+            end
+    end.
+
+%% The backend starts in this process, which holds every limiter, so a backend
+%% that fails must not take the others with it.
+start_limiter(Name, Backend, Opts) ->
     Algorithm = maps:get(algorithm, Opts),
     BackendOpts = maps:merge(backend_defaults(Name), maps:get(backend_opts, Opts, #{})),
     Limiter = #{algorithm => Algorithm, window => maps:get(window, Opts)},
-    {ok, BackendState} = Backend:init(BackendOpts#{seki_limiter => Limiter}),
-    Config = (build_config(Algorithm, Opts))#{atomic => is_atomic(Backend)},
-    true = ets:insert(?REGISTRY_TAB, #limiter{
-        name = Name,
-        algorithm = Algorithm,
-        backend = Backend,
-        backend_state = BackendState,
-        config = Config
-    }),
-    State#{Name => BackendState}.
+    try Backend:init(BackendOpts#{seki_limiter => Limiter}) of
+        {ok, BackendState} ->
+            Config = (build_config(Algorithm, Opts))#{atomic => is_atomic(Backend)},
+            true = ets:insert(?REGISTRY_TAB, #limiter{
+                name = Name,
+                algorithm = Algorithm,
+                backend = Backend,
+                backend_state = BackendState,
+                config = Config
+            }),
+            ok;
+        {error, Reason} ->
+            {error, {backend_failed, Reason}};
+        Other ->
+            {error, {backend_failed, {bad_return, Other}}}
+    catch
+        Class:Reason ->
+            {error, {backend_failed, {Class, Reason}}}
+    end.
+
+backend_callback(#limiter{name = Name, backend = Backend, backend_state = State}, Callback, Args) ->
+    try
+        _ = apply(Backend, Callback, [State | Args]),
+        ok
+    catch
+        Class:Reason ->
+            ?LOG_ERROR(
+                #{
+                    msg => limiter_backend_failed,
+                    name => seki_name:label(Name),
+                    backend => Backend,
+                    callback => Callback,
+                    class => Class,
+                    reason => Reason
+                },
+                #{domain => [seki]}
+            )
+    end.
 
 is_atomic(Backend) ->
     _ = code:ensure_loaded(Backend),
@@ -189,7 +229,7 @@ schedule_cleanup() ->
 
 run_cleanup() ->
     _ = [
-        Backend:cleanup(BackendState, ?CLEANUP_INTERVAL * 10)
-     || #limiter{backend = Backend, backend_state = BackendState} <- ets:tab2list(?REGISTRY_TAB)
+        backend_callback(Limiter, cleanup, [?CLEANUP_INTERVAL * 10])
+     || Limiter <- ets:tab2list(?REGISTRY_TAB)
     ],
     ok.

@@ -13,7 +13,8 @@
     | percent
     | positive
     | boolean
-    | module
+    | atom
+    | interval
     | options
     | {one_of, [atom()]}
     | {function, arity()}.
@@ -44,7 +45,8 @@ is_valid(pos_integer, Value) -> is_integer(Value) andalso Value > 0;
 is_valid(percent, Value) -> is_number(Value) andalso Value > 0 andalso Value =< 100;
 is_valid(positive, Value) -> is_number(Value) andalso Value > 0;
 is_valid(boolean, Value) -> is_boolean(Value);
-is_valid(module, Value) -> is_atom(Value);
+is_valid(atom, Value) -> is_atom(Value);
+is_valid(interval, Value) -> is_integer(Value) andalso Value > 0 andalso Value =< 16#FFFFFFFF;
 is_valid(options, Value) -> is_map(Value);
 is_valid({one_of, Allowed}, Value) -> lists:member(Value, Allowed);
 is_valid({function, Arity}, Value) -> is_function(Value, Arity).

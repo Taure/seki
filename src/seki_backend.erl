@@ -27,9 +27,18 @@ with `allow_non_atomic => true`. Such a limiter checks with `get/2` then
 requests through than the limit allows.
 
 `update/4` must be atomic too, and may call `Fun` more than once.
+
+## Failures
+
+`init/1` runs in the process that holds every limiter. When it returns
+`{error, Reason}`, raises, or returns anything else, `seki:new_limiter/2`
+returns `{error, {backend_failed, _}}` and no limiter is created. A failure
+in `cleanup/2` or `terminate/1` is logged and the other limiters carry on.
+Do not link a process to the caller of `init/1` unless its death should take
+every limiter with it.
 """.
 
--callback init(Opts :: map()) -> {ok, State :: term()}.
+-callback init(Opts :: map()) -> {ok, State :: term()} | {error, Reason :: term()}.
 
 -callback get(State :: term(), Key :: term()) -> {ok, Value :: term()} | not_found.
 

@@ -26,6 +26,10 @@ suits most rate limiting use cases.
   to `{seki_limiters, TableName}`. Limiters that share a group merge each
   other's keys, so give each limiter its own group.
 - `gossip_interval`: broadcast interval in ms (default: 1000)
+
+`init/1` returns `{error, {invalid_option, Key}}` when `scope` or
+`table_name` is not an atom, or `gossip_interval` is not a whole number of
+milliseconds from 1 to 4294967295.
 """.
 
 -behaviour(seki_backend).
@@ -54,6 +58,44 @@ suits most rate limiting use cases.
 %%----------------------------------------------------------------------
 
 init(Opts) ->
+    Kinds = [{scope, atom}, {table_name, atom}, {gossip_interval, interval}],
+    case seki_options:check(Opts, Kinds) of
+        ok -> start(Opts);
+        {error, Reason} -> {error, Reason}
+    end.
+
+get(#state{local_tab = Tab}, Key) ->
+    seki_ets:lookup(Tab, Key).
+
+put(#state{local_tab = Tab}, Key, Value) ->
+    seki_ets:insert(Tab, Key, Value).
+
+update(#state{local_tab = Tab}, Key, Fun, Default) ->
+    seki_ets:update(Tab, Key, Fun, Default).
+
+atomic_update(#state{local_tab = Tab}, Key, Step) ->
+    seki_ets:atomic_update(Tab, Key, Step).
+
+delete(#state{local_tab = Tab}, Key) ->
+    seki_ets:delete(Tab, Key).
+
+cleanup(#state{local_tab = Tab}, OlderThan) ->
+    seki_ets:cleanup(Tab, OlderThan).
+
+terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
+    logger:info(
+        "Distributed backend shutting down, stopping gossip",
+        #{domain => [seki]}
+    ),
+    seki_pg_gossip:stop(GossipPid),
+    ets:delete(Tab),
+    ok.
+
+%%----------------------------------------------------------------------
+%% Internal
+%%----------------------------------------------------------------------
+
+start(Opts) ->
     Scope = maps:get(scope, Opts, seki_pg),
     TableName = maps:get(table_name, Opts, seki_pg_data),
     Group = maps:get(group, Opts, {seki_limiters, TableName}),
@@ -90,37 +132,6 @@ init(Opts) ->
         gossip_pid = GossipPid,
         scope = Scope
     }}.
-
-get(#state{local_tab = Tab}, Key) ->
-    seki_ets:lookup(Tab, Key).
-
-put(#state{local_tab = Tab}, Key, Value) ->
-    seki_ets:insert(Tab, Key, Value).
-
-update(#state{local_tab = Tab}, Key, Fun, Default) ->
-    seki_ets:update(Tab, Key, Fun, Default).
-
-atomic_update(#state{local_tab = Tab}, Key, Step) ->
-    seki_ets:atomic_update(Tab, Key, Step).
-
-delete(#state{local_tab = Tab}, Key) ->
-    seki_ets:delete(Tab, Key).
-
-cleanup(#state{local_tab = Tab}, OlderThan) ->
-    seki_ets:cleanup(Tab, OlderThan).
-
-terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
-    logger:info(
-        "Distributed backend shutting down, stopping gossip",
-        #{domain => [seki]}
-    ),
-    seki_pg_gossip:stop(GossipPid),
-    ets:delete(Tab),
-    ok.
-
-%%----------------------------------------------------------------------
-%% Internal
-%%----------------------------------------------------------------------
 
 ensure_pg_scope(Scope) ->
     case pg:start(Scope) of

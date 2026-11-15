@@ -9,7 +9,8 @@
     {enabled, boolean},
     {kind, {one_of, [count, time]}},
     {classifier, {function, 1}},
-    {backend, module},
+    {backend, atom},
+    {every, interval},
     {nested, options}
 ]).
 
@@ -32,6 +33,8 @@ options_of_the_right_kind_pass_test_() ->
             #{kind => time},
             #{classifier => fun erlang:is_atom/1},
             #{backend => seki_backend_ets},
+            #{every => 1},
+            #{every => 16#FFFFFFFF},
             #{nested => #{}},
             #{size => 5, share => 50, kind => time, enabled => true}
         ]
@@ -54,6 +57,10 @@ an_option_of_the_wrong_kind_is_named_test_() ->
             {ratio, ~"0.5"},
             {enabled, yes},
             {enabled, 1},
+            {every, 0},
+            {every, 1.5},
+            {every, 16#100000000},
+            {every, infinity},
             {kind, bogus},
             {kind, ~"count"},
             {classifier, fun erlang:is_map_key/2},

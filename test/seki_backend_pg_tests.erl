@@ -67,6 +67,7 @@ gossip_test_() ->
         {"gossip start and stop", fun gossip_start_stop/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"malformed gossip is dropped", fun malformed_gossip_is_dropped/0},
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"gossip receives merge cast", fun gossip_merge_cast/0},
         {"gossip broadcasts to peers", fun gossip_broadcast/0}
     ]}.
@@ -427,3 +428,17 @@ parsed(Text) ->
     {ok, Tokens, _End} = erl_scan:string(Text),
     {ok, Term} = erl_parse:parse_term(Tokens),
     Term.
+
+invalid_options_are_refused() ->
+    Tables = length(ets:all()),
+    [
+        ?assertEqual({error, {invalid_option, Key}}, seki_backend_pg:init(#{Key => Value}))
+     || {Key, Value} <:- [
+            {scope, ~"seki_pg"},
+            {table_name, ~"seki_pg_data"},
+            {gossip_interval, 0},
+            {gossip_interval, 1.5},
+            {gossip_interval, never}
+        ]
+    ],
+    ?assertEqual(Tables, length(ets:all())).
