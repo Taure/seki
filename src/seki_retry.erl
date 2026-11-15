@@ -81,10 +81,7 @@ do_attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts) ->
         Result ->
             case RetryOn(Result) of
                 true when Attempt < MaxAttempts ->
-                    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
-                    emit_retry(Name, Attempt, Result, Delay, Opts),
-                    timer:sleep(Delay),
-                    attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Result);
+                    attempt_again(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, Result);
                 true ->
                     emit_exhausted(Name, Attempt, Result),
                     {error, Result};
@@ -102,15 +99,18 @@ do_attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts) ->
             Error = {Class, Reason, Stacktrace},
             case RetryOn({error, Reason}) of
                 true when Attempt < MaxAttempts ->
-                    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
-                    emit_retry(Name, Attempt, Error, Delay, Opts),
-                    timer:sleep(Delay),
-                    attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Error);
+                    attempt_again(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, Error);
                 _ ->
                     emit_exhausted(Name, Attempt, Error),
                     {error, Error}
             end
     end.
+
+attempt_again(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, Failure) ->
+    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
+    emit_retry(Name, Attempt, Failure, Delay, Opts),
+    timer:sleep(Delay),
+    attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Failure).
 
 default_retry_on({error, _}) -> true;
 default_retry_on(_) -> false.
