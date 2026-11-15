@@ -309,7 +309,6 @@ check_vm_memory() ->
     MemInfo = erlang:memory(),
     TotalMB = proplists:get_value(total, MemInfo) div (1024 * 1024),
     ProcessMB = proplists:get_value(processes, MemInfo) div (1024 * 1024),
-    SystemLimit = erlang:system_info(system_memory_allocation_info),
     %% Use process limit as heuristic — high memory is degraded, not unhealthy
     Health =
         case TotalMB > 4096 of
@@ -318,8 +317,7 @@ check_vm_memory() ->
         end,
     {Health, #{
         total_mb => TotalMB,
-        process_mb => ProcessMB,
-        system_info => SystemLimit
+        process_mb => ProcessMB
     }}.
 
 check_vm_processes() ->

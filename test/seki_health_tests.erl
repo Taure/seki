@@ -20,7 +20,8 @@ health_test_() ->
         {"readiness reflects health", fun readiness_health/0},
         {"unregister check", fun unregister/0},
         {"check_one returns single result", fun check_one/0},
-        {"exception in check returns unhealthy", fun exception_check/0}
+        {"exception in check returns unhealthy", fun exception_check/0},
+        {"vm checks run and report", fun vm_checks_run/0}
     ]}.
 
 starts_healthy() ->
@@ -116,3 +117,22 @@ exception_check() ->
     #{health := Health} = seki_health:check(h_exc),
     ?assertEqual(unhealthy, Health),
     gen_server:stop(h_exc).
+
+vm_checks_run() ->
+    {ok, _} = seki_health:start_link(h_vm, #{check_interval => 60000}),
+    ?assertMatch(
+        {healthy, #{total_mb := Total, process_mb := Processes}} when
+            is_integer(Total) andalso is_integer(Processes),
+        seki_health:check_one(h_vm, vm_memory)
+    ),
+    ?assertMatch(
+        {_, #{count := _, limit := _, utilization := _}},
+        seki_health:check_one(h_vm, vm_processes)
+    ),
+    ?assertMatch(
+        {_, #{total_run_queue := _, schedulers := _, per_scheduler := _}},
+        seki_health:check_one(h_vm, vm_run_queue)
+    ),
+    #{checks := Checks} = seki_health:check(h_vm),
+    ?assertEqual([vm_memory, vm_processes, vm_run_queue], lists:sort(maps:keys(Checks))),
+    gen_server:stop(h_vm).
