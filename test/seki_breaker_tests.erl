@@ -475,7 +475,10 @@ time_window_expiry() ->
 
 min_sample_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
-        {"does not trip with too few samples", fun min_sample/0}
+        {"does not trip with too few samples", fun min_sample/0},
+        {"a count window under five trips once it is full", fun small_window_trips/0},
+        {"a count window of one trips on one failure", fun window_of_one_trips/0},
+        {"a time window still needs five samples", fun time_window_min_sample/0}
     ]}.
 
 min_sample() ->
@@ -491,6 +494,36 @@ min_sample() ->
     ),
     ?assertEqual(closed, seki:state(br_min)),
     seki:delete_breaker(br_min).
+
+small_window_trips() ->
+    {ok, _} = seki:new_breaker(br_small, #{
+        window_size => 2,
+        failure_threshold => 50,
+        wait_duration => 60000
+    }),
+    {ok, {error, fail}} = seki:call(br_small, fun() -> {error, fail} end),
+    ?assertEqual(closed, seki:state(br_small)),
+    {ok, {error, fail}} = seki:call(br_small, fun() -> {error, fail} end),
+    ?assertEqual(open, seki:state(br_small)),
+    seki:delete_breaker(br_small).
+
+window_of_one_trips() ->
+    {ok, _} = seki:new_breaker(br_one, #{window_size => 1, wait_duration => 60000}),
+    {ok, ok} = seki:call(br_one, fun() -> ok end),
+    ?assertEqual(closed, seki:state(br_one)),
+    {ok, error} = seki:call(br_one, fun() -> error end),
+    ?assertEqual(open, seki:state(br_one)),
+    seki:delete_breaker(br_one).
+
+time_window_min_sample() ->
+    {ok, _} = seki:new_breaker(br_time_min, #{
+        window_type => time,
+        window_size => 3,
+        wait_duration => 60000
+    }),
+    [seki:call(br_time_min, fun() -> {error, fail} end) || _ <:- lists:seq(1, 4)],
+    ?assertEqual(closed, seki:state(br_time_min)),
+    seki:delete_breaker(br_time_min).
 
 %%----------------------------------------------------------------------
 %% Half-open Rejection Tests

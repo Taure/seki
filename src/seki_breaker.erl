@@ -32,6 +32,8 @@ Typically used via `seki:call/2` rather than directly.
     terminate/3
 ]).
 
+-define(MINIMUM_SAMPLE, 5).
+
 -record(data, {
     name :: seki:name(),
     %% Sliding window for failure tracking
@@ -315,10 +317,15 @@ record_outcome(Outcome, #data{window_type = time, window_size = WindowMs} = Data
     {Q3, Removed} = prune_old(Q2, Cutoff, 0),
     Data#data{outcomes = Q3, outcome_count = Count + 1 - Removed}.
 
-should_trip(#data{outcome_count = Count}) when Count < 5 ->
-    %% Minimum sample size
-    false;
-should_trip(Data) ->
+should_trip(#data{outcome_count = Count} = Data) ->
+    Count >= minimum_sample(Data) andalso over_threshold(Data).
+
+%% A count window smaller than the usual minimum is full before it reaches
+%% it, and would never trip.
+minimum_sample(#data{window_type = count, window_size = Size}) -> min(?MINIMUM_SAMPLE, Size);
+minimum_sample(#data{window_type = time}) -> ?MINIMUM_SAMPLE.
+
+over_threshold(Data) ->
     #data{
         failure_threshold = FailThreshold,
         slow_call_threshold = SlowThreshold,

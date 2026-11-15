@@ -69,7 +69,7 @@ Tracks the last N calls. Simple, predictable, and the default.
 ```
 
 The breaker requires at least 5 outcomes before it can trip, preventing false positives
-during startup.
+during startup. A count window smaller than 5 can trip as soon as it is full.
 
 ### Time-Based Window
 
