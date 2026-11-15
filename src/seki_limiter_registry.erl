@@ -62,7 +62,10 @@ init([]) ->
 handle_call({register, Name, Opts}, _From, State) ->
     case ets:lookup(?REGISTRY_TAB, Name) of
         [_] ->
-            ?LOG_DEBUG(#{msg => limiter_already_registered, name => Name}, #{domain => [seki]}),
+            ?LOG_DEBUG(
+                #{msg => limiter_already_registered, name => seki_name:label(Name)},
+                #{domain => [seki]}
+            ),
             {reply, {error, already_registered}, State};
         [] ->
             Backend = maps:get(backend, Opts, seki_backend_ets),

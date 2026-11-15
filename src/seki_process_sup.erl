@@ -3,6 +3,8 @@
 
 -behaviour(supervisor).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/0,
     start_child/3,
@@ -26,16 +28,24 @@ start_child(Module, Name, Opts) ->
     },
     case supervisor:start_child(?MODULE, ChildSpec) of
         {ok, Pid} = Ok ->
-            logger:info(
-                "Started ~p:~p (pid=~p)",
-                [Module, Name, Pid],
+            ?LOG_INFO(
+                #{
+                    msg => process_started,
+                    module => Module,
+                    name => seki_name:label(Name),
+                    pid => Pid
+                },
                 #{domain => [seki]}
             ),
             Ok;
         {error, Reason} = Err ->
-            logger:error(
-                "Failed to start ~p:~p: ~p",
-                [Module, Name, Reason],
+            ?LOG_ERROR(
+                #{
+                    msg => process_start_failed,
+                    module => Module,
+                    name => seki_name:label(Name),
+                    reason => Reason
+                },
                 #{domain => [seki]}
             ),
             Err
@@ -47,24 +57,25 @@ stop_child(Name) ->
         ok ->
             case supervisor:delete_child(?MODULE, Name) of
                 ok ->
-                    logger:info(
-                        "Stopped supervised process ~p",
-                        [Name],
+                    ?LOG_INFO(
+                        #{msg => process_stopped, name => seki_name:label(Name)},
                         #{domain => [seki]}
                     ),
                     ok;
                 {error, Reason} = Err ->
-                    logger:error(
-                        "Failed to delete child spec ~p: ~p",
-                        [Name, Reason],
+                    ?LOG_ERROR(
+                        #{
+                            msg => process_delete_failed,
+                            name => seki_name:label(Name),
+                            reason => Reason
+                        },
                         #{domain => [seki]}
                     ),
                     Err
             end;
         {error, Reason} = Err ->
-            logger:error(
-                "Failed to terminate ~p: ~p",
-                [Name, Reason],
+            ?LOG_ERROR(
+                #{msg => process_stop_failed, name => seki_name:label(Name), reason => Reason},
                 #{domain => [seki]}
             ),
             Err

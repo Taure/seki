@@ -24,6 +24,8 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/2,
     admit/2,
@@ -145,9 +147,14 @@ handle_call({admit, Priority}, _From, State) ->
             NewState = State#state{
                 total_shed = State#state.total_shed + 1
             },
-            logger:warning(
-                "Load shedder ~p: request shed (priority=~p, in_flight=~p/~p)",
-                [State#state.name, Priority, State#state.in_flight, State#state.max_in_flight],
+            ?LOG_WARNING(
+                #{
+                    msg => request_shed,
+                    name => seki_name:label(State#state.name),
+                    priority => Priority,
+                    in_flight => State#state.in_flight,
+                    max_in_flight => State#state.max_in_flight
+                },
                 #{domain => [seki]}
             ),
             emit_shed(State#state.name, Priority, State#state.in_flight),
@@ -243,9 +250,8 @@ update_codel(DurationMs, State) ->
             %% Sojourn time below target — reset
             case Dropping of
                 true ->
-                    logger:notice(
-                        "Load shedder ~p: CoDel exiting drop mode",
-                        [State#state.name],
+                    ?LOG_NOTICE(
+                        #{msg => codel_drop_mode_left, name => seki_name:label(State#state.name)},
                         #{domain => [seki]}
                     );
                 false ->
@@ -264,9 +270,12 @@ update_codel(DurationMs, State) ->
             %% Check if we've been above target for an interval
             case Now - FirstAbove >= Interval of
                 true ->
-                    logger:warning(
-                        "Load shedder ~p: CoDel entering drop mode (drop_count=~p)",
-                        [State#state.name, DropCount + 1],
+                    ?LOG_WARNING(
+                        #{
+                            msg => codel_drop_mode_entered,
+                            name => seki_name:label(State#state.name),
+                            drop_count => DropCount + 1
+                        },
                         #{domain => [seki]}
                     ),
                     emit_codel_drop(State#state.name, DropCount + 1),

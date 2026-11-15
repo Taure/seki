@@ -15,6 +15,8 @@ or `acquire/1` + `release/1` for manual control.
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/2,
     acquire/1,
@@ -115,9 +117,12 @@ handle_call({acquire, Pid}, _From, #state{counter = Counter, max_concurrent = Ma
             emit_acquire(State#state.name, Current + 1, Max),
             {reply, ok, State#state{monitors = NewMonitors}};
         false ->
-            logger:warning(
-                "Bulkhead ~p full (~p/~p), request rejected",
-                [State#state.name, Max, Max],
+            ?LOG_WARNING(
+                #{
+                    msg => bulkhead_full,
+                    name => seki_name:label(State#state.name),
+                    max_concurrent => Max
+                },
                 #{domain => [seki]}
             ),
             emit_rejected(State#state.name, Max),
@@ -137,9 +142,13 @@ handle_cast(_Msg, State) ->
 handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
     case maps:take(MonRef, State#state.monitors) of
         {_, NewMonitors} ->
-            logger:warning(
-                "Bulkhead ~p: process ~p died (~p), releasing slot",
-                [State#state.name, Pid, Reason],
+            ?LOG_WARNING(
+                #{
+                    msg => bulkhead_holder_died,
+                    name => seki_name:label(State#state.name),
+                    pid => Pid,
+                    reason => Reason
+                },
                 #{domain => [seki]}
             ),
             atomics:sub(State#state.counter, 1, 1),

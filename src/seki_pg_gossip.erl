@@ -12,6 +12,8 @@ Used internally by `seki_backend_pg`.
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/1,
     stop/1,
@@ -54,9 +56,13 @@ stop(Pid) ->
 
 init(#{scope := Scope, group := Group, tab := Tab, interval := Interval} = Opts) ->
     ok = pg:join(Scope, Group, self()),
-    logger:info(
-        "Gossip joined pg group ~p:~p (interval=~pms)",
-        [Scope, Group, Interval],
+    ?LOG_INFO(
+        #{
+            msg => gossip_joined,
+            scope => Scope,
+            group => seki_name:label(Group),
+            interval => Interval
+        },
         #{domain => [seki]}
     ),
     schedule_gossip(Interval),
@@ -97,9 +103,8 @@ handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(Reason, #state{scope = Scope, group = Group}) ->
-    logger:info(
-        "Gossip leaving pg group ~p:~p (reason=~p)",
-        [Scope, Group, Reason],
+    ?LOG_INFO(
+        #{msg => gossip_leaving, scope => Scope, group => seki_name:label(Group), reason => Reason},
         #{domain => [seki]}
     ),
     pg:leave(Scope, Group, self()),

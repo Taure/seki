@@ -23,6 +23,10 @@ Call `seki_otel:setup/0` in your application start callback.
     handle_bulkhead/4
 ]).
 
+-ifdef(TEST).
+-export([name_attribute/1]).
+-endif.
+
 -define(HANDLER_ID_PREFIX, seki_otel).
 
 -doc "Attach OTel handlers to all Seki telemetry events.".
@@ -230,9 +234,8 @@ handler_id(Event) ->
     ).
 
 %% A span attribute is an atom, a binary or a number: a name that is some
-%% other term is recorded as it prints.
-name_attribute(Name) when is_atom(Name); is_binary(Name); is_number(Name) -> Name;
-name_attribute(Name) -> iolist_to_binary(io_lib:format("~0tp", [Name])).
+%% other term is recorded as it prints, to a limited depth.
+name_attribute(Name) -> seki_name:label(Name).
 
 event_to_string(Event) ->
     string:join([atom_to_list(A) || A <- Event], "_").

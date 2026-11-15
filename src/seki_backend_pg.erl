@@ -29,6 +29,8 @@ suits most rate limiting use cases.
 
 -behaviour(seki_backend).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     init/1,
     get/2,
@@ -73,9 +75,13 @@ init(Opts) ->
         algorithm => maps:get(algorithm, Limiter, undefined),
         window => maps:get(window, Limiter, undefined)
     }),
-    logger:info(
-        "Distributed backend started (scope=~p, group=~p, gossip_interval=~pms)",
-        [Scope, Group, GossipInterval],
+    ?LOG_INFO(
+        #{
+            msg => distributed_backend_started,
+            scope => Scope,
+            group => seki_name:label(Group),
+            gossip_interval => GossipInterval
+        },
         #{domain => [seki]}
     ),
     {ok, #state{

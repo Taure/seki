@@ -24,6 +24,8 @@ Compatible with Kubernetes liveness/readiness/startup probes via
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/1,
     start_link/2,
@@ -210,13 +212,19 @@ run_all_checks(State) ->
                 [],
                 Results
             ),
-            logger:error(
-                "Health ~p: unhealthy (failed checks: ~p)",
-                [State#state.name, FailedChecks],
+            ?LOG_ERROR(
+                #{
+                    msg => health_unhealthy,
+                    name => seki_name:label(State#state.name),
+                    failed_checks => FailedChecks
+                },
                 #{domain => [seki]}
             );
         degraded ->
-            logger:warning("Health ~p: degraded", [State#state.name], #{domain => [seki]});
+            ?LOG_WARNING(
+                #{msg => health_degraded, name => seki_name:label(State#state.name)},
+                #{domain => [seki]}
+            );
         healthy ->
             ok
     end,

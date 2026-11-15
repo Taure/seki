@@ -19,6 +19,8 @@ Two algorithms:
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/2,
     acquire/1,
@@ -163,9 +165,13 @@ handle_call({acquire, Pid}, _From, State) ->
             emit_acquire(State#state.name, InFlight + 1, trunc(Limit)),
             {reply, ok, NewState};
         false ->
-            logger:warning(
-                "Adaptive limiter ~p at capacity (limit=~p, in_flight=~p)",
-                [State#state.name, trunc(Limit), InFlight],
+            ?LOG_WARNING(
+                #{
+                    msg => adaptive_limit_reached,
+                    name => seki_name:label(State#state.name),
+                    limit => trunc(Limit),
+                    in_flight => InFlight
+                },
                 #{domain => [seki]}
             ),
             emit_rejected(State#state.name, trunc(Limit)),
@@ -208,9 +214,13 @@ handle_cast(_Msg, State) ->
 handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
     case maps:take(MonRef, State#state.monitors) of
         {{_, StartTime}, NewMonitors} ->
-            logger:warning(
-                "Adaptive limiter ~p: process ~p died (~p), releasing slot",
-                [State#state.name, Pid, Reason],
+            ?LOG_WARNING(
+                #{
+                    msg => adaptive_holder_died,
+                    name => seki_name:label(State#state.name),
+                    pid => Pid,
+                    reason => Reason
+                },
                 #{domain => [seki]}
             ),
             Duration = erlang:monotonic_time(millisecond) - StartTime,
@@ -253,9 +263,13 @@ adjust_aimd(_, _Duration, State) ->
     NewInt = trunc(NewLimit),
     case OldInt =/= NewInt of
         true ->
-            logger:notice(
-                "Adaptive limiter ~p: limit decreased ~p -> ~p",
-                [State#state.name, OldInt, NewInt],
+            ?LOG_NOTICE(
+                #{
+                    msg => adaptive_limit_decreased,
+                    name => seki_name:label(State#state.name),
+                    from => OldInt,
+                    to => NewInt
+                },
                 #{domain => [seki]}
             );
         false ->
@@ -272,9 +286,14 @@ adjust_gradient(drop, _Duration, State) ->
     NewInt = trunc(NewLimit),
     case OldInt =/= NewInt of
         true ->
-            logger:notice(
-                "Adaptive limiter ~p: limit decreased ~p -> ~p (drop)",
-                [State#state.name, OldInt, NewInt],
+            ?LOG_NOTICE(
+                #{
+                    msg => adaptive_limit_decreased,
+                    name => seki_name:label(State#state.name),
+                    from => OldInt,
+                    to => NewInt,
+                    cause => drop
+                },
                 #{domain => [seki]}
             );
         false ->

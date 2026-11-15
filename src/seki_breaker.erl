@@ -119,9 +119,8 @@ closed({call, From}, {call, Fun}, Data) ->
             NewData = record_outcome(Outcome, Data),
             case should_trip(NewData) of
                 true ->
-                    logger:warning(
-                        "Circuit breaker ~p tripped: closed -> open",
-                        [Name],
+                    ?LOG_WARNING(
+                        #{msg => breaker_tripped, name => seki_name:label(Name)},
                         #{domain => [seki]}
                     ),
                     emit_state_change(Name, closed, open),
@@ -135,18 +134,21 @@ closed({call, From}, {call, Fun}, Data) ->
     catch
         Class:Reason:Stacktrace ->
             Duration = erlang:monotonic_time(millisecond) - Start,
-            logger:error(
-                "Circuit breaker ~p call exception: ~p:~p",
-                [Name, Class, Reason],
+            ?LOG_ERROR(
+                #{
+                    msg => breaker_call_raised,
+                    name => seki_name:label(Name),
+                    class => Class,
+                    reason => Reason
+                },
                 #{domain => [seki]}
             ),
             emit_call_telemetry(Name, closed, error, Duration),
             NewData = record_outcome(error, Data),
             case should_trip(NewData) of
                 true ->
-                    logger:warning(
-                        "Circuit breaker ~p tripped: closed -> open",
-                        [Name],
+                    ?LOG_WARNING(
+                        #{msg => breaker_tripped, name => seki_name:label(Name)},
                         #{domain => [seki]}
                     ),
                     emit_state_change(Name, closed, open),
@@ -176,9 +178,8 @@ open(cast, reset, Data) ->
     emit_state_change(Data#data.name, open, closed),
     {next_state, closed, reset_outcomes(Data)};
 open(state_timeout, try_half_open, Data) ->
-    logger:notice(
-        "Circuit breaker ~p: open -> half_open, probing",
-        [Data#data.name],
+    ?LOG_NOTICE(
+        #{msg => breaker_probing, name => seki_name:label(Data#data.name)},
         #{domain => [seki]}
     ),
     emit_state_change(Data#data.name, open, half_open),
@@ -215,9 +216,8 @@ half_open({call, From}, {call, Fun}, Data) ->
                         ok ->
                             case NewData2#data.half_open_count >= MaxRequests of
                                 true ->
-                                    logger:notice(
-                                        "Circuit breaker ~p recovered: half_open -> closed",
-                                        [Name],
+                                    ?LOG_NOTICE(
+                                        #{msg => breaker_recovered, name => seki_name:label(Name)},
                                         #{domain => [seki]}
                                     ),
                                     emit_state_change(Name, half_open, closed),
@@ -228,9 +228,12 @@ half_open({call, From}, {call, Fun}, Data) ->
                                     {keep_state, NewData2, [{reply, From, wrap_result(Result)}]}
                             end;
                         _ ->
-                            logger:warning(
-                                "Circuit breaker ~p probe failed (~p), reopening",
-                                [Name, Outcome],
+                            ?LOG_WARNING(
+                                #{
+                                    msg => breaker_probe_failed,
+                                    name => seki_name:label(Name),
+                                    outcome => Outcome
+                                },
                                 #{domain => [seki]}
                             ),
                             emit_state_change(Name, half_open, open),
@@ -242,9 +245,13 @@ half_open({call, From}, {call, Fun}, Data) ->
             catch
                 Class:Reason:Stacktrace ->
                     Duration = erlang:monotonic_time(millisecond) - Start,
-                    logger:warning(
-                        "Circuit breaker ~p probe exception: ~p:~p, reopening",
-                        [Name, Class, Reason],
+                    ?LOG_WARNING(
+                        #{
+                            msg => breaker_probe_raised,
+                            name => seki_name:label(Name),
+                            class => Class,
+                            reason => Reason
+                        },
                         #{domain => [seki]}
                     ),
                     emit_call_telemetry(Name, half_open, error, Duration),
@@ -285,14 +292,19 @@ is_error(Name, Classifier, Result) ->
             true;
         _NotBoolean ->
             ?LOG_WARNING(
-                #{msg => error_classifier_returned_no_boolean, name => Name},
+                #{msg => error_classifier_returned_no_boolean, name => seki_name:label(Name)},
                 #{domain => [seki]}
             ),
             true
     catch
         Class:Reason ->
             ?LOG_WARNING(
-                #{msg => error_classifier_raised, name => Name, class => Class, reason => Reason},
+                #{
+                    msg => error_classifier_raised,
+                    name => seki_name:label(Name),
+                    class => Class,
+                    reason => Reason
+                },
                 #{domain => [seki]}
             ),
             true
