@@ -184,7 +184,7 @@ handle_call(status, _From, State) ->
         #{
             current_limit => IntLimit,
             in_flight => InFlight,
-            available => max(0, IntLimit - InFlight)
+            available => seki_number:larger(0, IntLimit - InFlight)
         },
         State};
 handle_call(_Request, _From, State) ->
@@ -197,7 +197,7 @@ handle_cast({release, Pid, Outcome}, State) ->
             Duration = erlang:monotonic_time(millisecond) - StartTime,
             NewMonitors = maps:remove(MonRef, State#state.monitors),
             NewState0 = State#state{
-                in_flight = max(0, State#state.in_flight - 1),
+                in_flight = seki_number:larger(0, State#state.in_flight - 1),
                 monitors = NewMonitors
             },
             NewState = adjust_limit(Outcome, Duration, NewState0),
@@ -225,7 +225,7 @@ handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
             ),
             Duration = erlang:monotonic_time(millisecond) - StartTime,
             NewState0 = State#state{
-                in_flight = max(0, State#state.in_flight - 1),
+                in_flight = seki_number:larger(0, State#state.in_flight - 1),
                 monitors = NewMonitors
             },
             NewState = adjust_limit(error, Duration, NewState0),
@@ -252,13 +252,13 @@ adjust_limit(Outcome, Duration, #state{algorithm = gradient} = State) ->
 adjust_aimd(ok, _Duration, State) ->
     #state{current_limit = Limit, max_limit = MaxLimit, min_limit = MinLimit} = State,
     %% Additive increase: add 1/current_limit (so it takes ~limit successes to increase by 1)
-    NewLimit = min(MaxLimit * 1.0, Limit + 1.0 / max(1.0, Limit)),
+    NewLimit = seki_number:smaller(MaxLimit * 1.0, Limit + 1.0 / seki_number:larger(1.0, Limit)),
     emit_limit_change(State#state.name, trunc(Limit), trunc(NewLimit)),
-    State#state{current_limit = max(MinLimit * 1.0, NewLimit)};
+    State#state{current_limit = seki_number:larger(MinLimit * 1.0, NewLimit)};
 adjust_aimd(_, _Duration, State) ->
     #state{current_limit = Limit, backoff_ratio = Ratio, min_limit = MinLimit} = State,
     %% Multiplicative decrease
-    NewLimit = max(MinLimit * 1.0, Limit * Ratio),
+    NewLimit = seki_number:larger(MinLimit * 1.0, Limit * Ratio),
     OldInt = trunc(Limit),
     NewInt = trunc(NewLimit),
     case OldInt =/= NewInt of
@@ -281,7 +281,7 @@ adjust_aimd(_, _Duration, State) ->
 %% Gradient: Track latency trend
 adjust_gradient(drop, _Duration, State) ->
     #state{current_limit = Limit, min_limit = MinLimit} = State,
-    NewLimit = max(MinLimit * 1.0, Limit * 0.9),
+    NewLimit = seki_number:larger(MinLimit * 1.0, Limit * 0.9),
     OldInt = trunc(Limit),
     NewInt = trunc(NewLimit),
     case OldInt =/= NewInt of
@@ -322,7 +322,7 @@ adjust_gradient(ok, Duration, State) ->
     %% Calculate gradient: ratio of long-term to short-term latency
     Gradient =
         case NewShortRTT > 0.001 of
-            true -> max(0.5, min(2.0, NewLongRTT / NewShortRTT));
+            true -> seki_number:larger(0.5, seki_number:smaller(2.0, NewLongRTT / NewShortRTT));
             false -> 1.0
         end,
     %% Adjust limit based on gradient
@@ -330,10 +330,10 @@ adjust_gradient(ok, Duration, State) ->
         case Gradient >= Tolerance of
             true ->
                 %% Latency increasing — reduce limit
-                max(MinLimit * 1.0, Limit * Gradient * 0.9);
+                seki_number:larger(MinLimit * 1.0, Limit * Gradient * 0.9);
             false ->
                 %% Latency stable or improving — increase limit
-                min(MaxLimit * 1.0, Limit + 1.0 / max(1.0, Limit))
+                seki_number:smaller(MaxLimit * 1.0, Limit + 1.0 / seki_number:larger(1.0, Limit))
         end,
     emit_limit_change(State#state.name, trunc(Limit), trunc(NewLimit)),
     State#state{

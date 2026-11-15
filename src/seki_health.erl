@@ -341,7 +341,7 @@ check_vm_processes() ->
 check_vm_run_queue() ->
     RunQueue = erlang:statistics(total_run_queue_lengths_all),
     Schedulers = erlang:system_info(schedulers_online),
-    PerScheduler = RunQueue / max(1, Schedulers),
+    PerScheduler = RunQueue / seki_number:larger(1, Schedulers),
     Health =
         case PerScheduler of
             P when P > 10.0 -> unhealthy;

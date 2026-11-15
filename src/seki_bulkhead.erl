@@ -59,7 +59,9 @@ acquire(Name) ->
 -doc "Acquire a concurrency slot with a timeout.".
 -spec acquire(seki:name(), non_neg_integer()) -> ok | {error, bulkhead_full}.
 acquire(Name, Timeout) ->
-    gen_server:call(seki_registry:server(Name), {acquire, self()}, max(5000, Timeout + 1000)).
+    gen_server:call(
+        seki_registry:server(Name), {acquire, self()}, seki_number:larger(5000, Timeout + 1000)
+    ).
 
 -doc "Release a previously acquired concurrency slot.".
 -spec release(seki:name()) -> ok.

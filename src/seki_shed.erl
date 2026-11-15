@@ -173,7 +173,7 @@ handle_call(status, _From, State) ->
         #{
             in_flight => InFlight,
             max_in_flight => Max,
-            utilization => InFlight / max(1, Max),
+            utilization => InFlight / seki_number:larger(1, Max),
             dropping => Dropping,
             drop_count => State#state.drop_count,
             total_admitted => Admitted,
@@ -186,7 +186,7 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({complete, DurationMs}, State) ->
     NewState0 = State#state{
-        in_flight = max(0, State#state.in_flight - 1)
+        in_flight = seki_number:larger(0, State#state.in_flight - 1)
     },
     NewState = update_codel(DurationMs, NewState0),
     {noreply, NewState};
@@ -212,7 +212,7 @@ should_admit(Priority, State) ->
         max_in_flight = Max,
         dropping = Dropping
     } = State,
-    Utilization = InFlight / max(1, Max),
+    Utilization = InFlight / seki_number:larger(1, Max),
     Threshold = priority_threshold(Priority, State),
     case Utilization >= Threshold of
         true ->

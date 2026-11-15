@@ -52,7 +52,7 @@ set_abs(Deadline) ->
             ok;
         Existing ->
             %% Take the tighter (earlier) deadline
-            erlang:put(?DEADLINE_KEY, min(Existing, Deadline)),
+            erlang:put(?DEADLINE_KEY, seki_number:smaller(Existing, Deadline)),
             ok
     end.
 
@@ -86,7 +86,7 @@ time_remaining() ->
             infinity;
         Deadline ->
             Now = erlang:monotonic_time(millisecond),
-            max(0, Deadline - Now)
+            seki_number:larger(0, Deadline - Now)
     end.
 
 -doc "Check if the deadline has been reached (boolean).".
