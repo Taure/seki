@@ -171,7 +171,7 @@ init({Name, Opts}) ->
     schedule_check(Interval),
     {ok, State}.
 
-handle_call({register, CheckName, Fun, Critical}, _From, State) ->
+handle_call({register, CheckName, Fun, Critical}, _From, State) when is_boolean(Critical) ->
     Check = #check{
         name = CheckName,
         fun_ = Fun,

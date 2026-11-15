@@ -207,12 +207,10 @@ handle_call(Request, _From, State) ->
     ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown}, State}.
 
-handle_cast({complete, DurationMs}, State) ->
-    NewState0 = State#state{
-        in_flight = seki_number:larger(0, State#state.in_flight - 1)
-    },
-    NewState = update_codel(DurationMs, NewState0),
-    {noreply, NewState};
+handle_cast({complete, DurationMs}, State) when is_number(DurationMs) ->
+    {noreply, update_codel(DurationMs, completed(State))};
+handle_cast({complete, _NotADuration}, State) ->
+    {noreply, completed(State)};
 handle_cast(Message, State) ->
     ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
@@ -223,6 +221,9 @@ handle_info(Message, State) ->
 
 terminate(_Reason, _State) ->
     ok.
+
+completed(State) ->
+    State#state{in_flight = seki_number:larger(0, State#state.in_flight - 1)}.
 
 %%----------------------------------------------------------------------
 %% Admission logic

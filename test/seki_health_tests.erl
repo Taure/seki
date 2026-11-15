@@ -12,6 +12,7 @@ cleanup(_) ->
 
 health_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"critical is true or false", fun critical_is_a_boolean/0},
         {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"starts healthy with vm checks", fun starts_healthy/0},
@@ -198,6 +199,21 @@ invalid_options_are_refused() ->
     }),
     ?assertEqual(ok, seki_health:readiness(h_invalid)),
     seki:delete_health(h_invalid).
+
+critical_is_a_boolean() ->
+    {ok, Pid} = seki_health:start_link(h_critical, #{vm_checks => false, check_interval => 60000}),
+    Down = fun() -> {unhealthy, #{}} end,
+    ?assertError(
+        {badmatch, {error, unknown}},
+        seki_health:register_check(h_critical, db, Down, #{critical => yes})
+    ),
+    ?assertMatch(
+        #{health := healthy, checks := Checks} when map_size(Checks) =:= 0,
+        seki_health:check(h_critical)
+    ),
+    ok = seki_health:register_check(h_critical, db, Down, #{critical => true}),
+    ?assertMatch(#{health := unhealthy}, seki_health:check(h_critical)),
+    ?assert(is_process_alive(Pid)).
 
 -spec option(atom(), term()) -> map().
 option(Key, Value) ->

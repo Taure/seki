@@ -189,7 +189,7 @@ init({Name, Opts}) ->
     },
     {ok, State}.
 
-handle_call({acquire, Pid}, _From, State) ->
+handle_call({acquire, Pid}, _From, State) when is_pid(Pid) ->
     #state{in_flight = InFlight, current_limit = Limit} = State,
     case InFlight < trunc(Limit) of
         true ->
@@ -382,7 +382,8 @@ adjust_gradient(ok, Duration, State) ->
         long_rtt = NewLongRTT,
         short_rtt = NewShortRTT
     };
-adjust_gradient(timeout, Duration, State) ->
+%% A timeout, and an outcome that is none of the four, lowers the limit.
+adjust_gradient(_TimeoutOrUnknown, Duration, State) ->
     adjust_gradient(drop, Duration, State).
 
 %%----------------------------------------------------------------------

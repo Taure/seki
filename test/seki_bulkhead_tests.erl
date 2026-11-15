@@ -12,6 +12,7 @@ cleanup(_) ->
 
 bulkhead_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"only a process acquires a slot", fun only_a_process_acquires/0},
         {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"allows calls within limit", fun allows_within_limit/0},
@@ -106,3 +107,13 @@ invalid_options_are_refused() ->
     {ok, _} = seki:new_bulkhead(bh_invalid, #{max_concurrent => 1, some_other_key => kept}),
     ?assertMatch(#{max := 1}, seki_bulkhead:status(bh_invalid)),
     seki:delete_bulkhead(bh_invalid).
+
+only_a_process_acquires() ->
+    {ok, Pid} = seki_bulkhead:start_link(bh_not_a_pid, #{max_concurrent => 1}),
+    [
+        ?assertEqual({error, unknown}, gen_server:call(Pid, {acquire, Holder}))
+     || Holder <:- [not_a_pid, 7, ~"pid", {a, pid}]
+    ],
+    ?assert(is_process_alive(Pid)),
+    ?assertMatch(#{current := 0}, seki_bulkhead:status(bh_not_a_pid)),
+    ?assertEqual(ok, seki_bulkhead:acquire(bh_not_a_pid)).

@@ -127,7 +127,9 @@ init({Name, Opts}) ->
         monitors = #{}
     }}.
 
-handle_call({acquire, Pid}, _From, #state{counter = Counter, max_concurrent = Max} = State) ->
+handle_call({acquire, Pid}, _From, #state{counter = Counter, max_concurrent = Max} = State) when
+    is_pid(Pid)
+->
     Current = atomics:get(Counter, 1),
     case Current < Max of
         true ->

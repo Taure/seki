@@ -12,6 +12,7 @@ cleanup(_) ->
 
 shed_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"a completion with no duration frees its place", fun completion_without_duration/0},
         {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"admits requests under capacity", fun admits_under_capacity/0},
@@ -176,6 +177,16 @@ invalid_options_are_refused() ->
     }),
     ?assertEqual(ok, seki_shed:admit(sh_invalid, 0)),
     seki:delete_shed(sh_invalid).
+
+completion_without_duration() ->
+    {ok, Pid} = seki_shed:start_link(sh_no_duration, #{max_in_flight => 10}),
+    ok = seki_shed:admit(sh_no_duration),
+    ok = seki_shed:admit(sh_no_duration),
+    ok = gen_server:cast(Pid, {complete, not_a_duration}),
+    ?assertMatch(#{in_flight := 1, avg_latency_ms := 0}, seki_shed:status(sh_no_duration)),
+    ok = seki_shed:complete(sh_no_duration, 4),
+    ?assertMatch(#{in_flight := 0, avg_latency_ms := 4.0}, seki_shed:status(sh_no_duration)),
+    ?assert(is_process_alive(Pid)).
 
 -spec option(atom(), term()) -> map().
 option(Key, Value) ->
