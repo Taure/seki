@@ -158,6 +158,14 @@ seki:call({payments, TenantId}, fun() -> charge(TenantId) end).
 A process named by an atom is registered under that atom. One named by another
 term is reached through seki's functions only.
 
+Every name is a process, and seki does not limit how many there are. A name
+made from a value a client chooses (a tenant id read from a request, an IP
+address, a header) lets that client start one process per value it sends. Make
+such a name only from a value that has been checked against what you know
+(the tenants that exist), or delete what is no longer used
+(`seki:delete_breaker/1`, `seki:delete_limiter/1`). A limiter needs no name
+per client: one limiter counts per key (`seki:check/2`).
+
 ## Telemetry
 
 Every seki operation emits telemetry events under the `[seki, ...]` prefix.
