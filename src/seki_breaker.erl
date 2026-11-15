@@ -62,12 +62,19 @@ start_link(Name, Opts) ->
 -doc "Execute a function through this breaker. Returns `{error, circuit_open}` when open.".
 -spec call(seki:name(), fun(() -> term()), map()) -> seki:call_result().
 call(Name, Fun, _CallOpts) ->
-    gen_statem:call(seki_registry:server(Name), {call, Fun}).
+    case gen_statem:call(seki_registry:server(Name), {call, Fun}) of
+        {ok, _Result} = Ok -> Ok;
+        {error, _Reason} = Error -> Error
+    end.
 
 -doc "Get the current breaker state.".
 -spec get_state(seki:name()) -> closed | open | half_open.
 get_state(Name) ->
-    gen_statem:call(seki_registry:server(Name), get_state).
+    case gen_statem:call(seki_registry:server(Name), get_state) of
+        closed -> closed;
+        open -> open;
+        half_open -> half_open
+    end.
 
 -doc "Reset the breaker to closed state.".
 -spec reset(seki:name()) -> ok.
