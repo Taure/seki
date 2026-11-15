@@ -57,11 +57,8 @@ stop_unsupervised(Gossip) ->
         exit:_Gone -> ok
     end.
 
+%% Every child is temporary, so this supervisor restarts nothing and its
+%% restart intensity is never used.
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
-    SupFlags = #{
-        strategy => one_for_one,
-        intensity => 10,
-        period => 60
-    },
-    {ok, {SupFlags, []}}.
+    {ok, {#{strategy => one_for_one}, []}}.

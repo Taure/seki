@@ -42,10 +42,7 @@ stop_breaker(Name) ->
 named() ->
     seki_registry:named_children(?MODULE).
 
+%% Every child is temporary, so this supervisor restarts nothing and its
+%% restart intensity is never used.
 init([]) ->
-    SupFlags = #{
-        strategy => one_for_one,
-        intensity => 10,
-        period => 60
-    },
-    {ok, {SupFlags, []}}.
+    {ok, {#{strategy => one_for_one}, []}}.
