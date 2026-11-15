@@ -51,13 +51,7 @@ setup(_Opts) ->
         {[seki, bulkhead, release], fun ?MODULE:handle_bulkhead/4},
         {[seki, bulkhead, rejected], fun ?MODULE:handle_bulkhead/4}
     ],
-    lists:foreach(
-        fun({Event, Handler}) ->
-            HandlerId = handler_id(Event),
-            telemetry:attach(HandlerId, Event, Handler, #{})
-        end,
-        Events
-    ),
+    _ = [telemetry:attach(handler_id(Event), Event, Handler, #{}) || {Event, Handler} <- Events],
     ok.
 
 -doc "Detach all OTel handlers.".
@@ -89,6 +83,12 @@ teardown() ->
 %% Telemetry Handlers (exported for telemetry:attach)
 %%----------------------------------------------------------------------
 
+-spec handle_rate_limit(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_rate_limit(Event, Measurements, Metadata, _Config) ->
     try
         otel_ctx:get_current(),
@@ -97,7 +97,7 @@ handle_rate_limit(Event, Measurements, Metadata, _Config) ->
             undefined ->
                 ok;
             _ ->
-                Action = lists:last(Event),
+                Action = action(Event),
                 Name = maps:get(name, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => rate_limit,
@@ -116,6 +116,12 @@ handle_rate_limit(Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_breaker_state_change(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -144,6 +150,12 @@ handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_breaker_call(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -172,6 +184,12 @@ handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_retry(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_retry(Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -179,7 +197,7 @@ handle_retry(Event, Measurements, Metadata, _Config) ->
             undefined ->
                 ok;
             _ ->
-                Action = lists:last(Event),
+                Action = action(Event),
                 Name = maps:get(name, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => retry,
@@ -198,6 +216,12 @@ handle_retry(Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_bulkhead(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_bulkhead(Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -205,7 +229,7 @@ handle_bulkhead(Event, Measurements, Metadata, _Config) ->
             undefined ->
                 ok;
             _ ->
-                Action = lists:last(Event),
+                Action = action(Event),
                 Name = maps:get(name, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => bulkhead,
@@ -239,6 +263,10 @@ name_attribute(Name) -> seki_name:label(Name).
 
 event_to_string(Event) ->
     string:join([atom_to_list(A) || A <- Event], "_").
+
+-spec action(telemetry:event_name()) -> atom().
+action([Action]) -> Action;
+action([_Segment | Rest]) -> action(Rest).
 
 measurements_to_attrs(Measurements) ->
     maps:fold(
