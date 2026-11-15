@@ -15,6 +15,7 @@ registry_test_() ->
             fun any_other_term_is_registered_here/0,
             fun a_name_is_taken_once/0,
             fun a_name_is_free_once_its_process_is_gone/0,
+            fun a_name_taken_again_outlives_news_of_its_first_holder/0,
             fun a_message_reaches_the_named_process/0,
             fun names_outlive_a_restart_of_the_registry/0,
             fun names_outlive_a_restart_of_the_keeper/0,
@@ -82,6 +83,26 @@ a_name_is_free_once_its_process_is_gone() ->
     _ = sys:get_state(seki_registry),
     ?assertEqual(self(), seki_registry:whereis_name(?NAME)).
 
+a_name_taken_again_outlives_news_of_its_first_holder() ->
+    Gone = idle(),
+    Self = self(),
+    ?assertEqual(yes, seki_registry:register_name(?NAME, Gone)),
+    ok = sys:suspend(seki_registry),
+    spawn_link(fun() -> Self ! {taken, seki_registry:register_name(?NAME, Self)} end),
+    ok = queued(seki_registry, 1),
+    stopped(Gone),
+    ok = queued(seki_registry, 2),
+    ok = sys:resume(seki_registry),
+    ?assertEqual(
+        {taken, yes},
+        receive
+            Taken -> Taken
+        after 5000 -> not_taken
+        end
+    ),
+    ?assertMatch(#{} = Names when map_size(Names) =:= 1, sys:get_state(seki_registry)),
+    ?assertEqual(self(), seki_registry:whereis_name(?NAME)).
+
 a_message_reaches_the_named_process() ->
     ?assertEqual(yes, seki_registry:register_name(?NAME, self())),
     ?assertEqual(self(), seki_registry:send(?NAME, {hello, ?NAME})),
@@ -102,7 +123,6 @@ names_outlive_a_restart_of_the_registry() ->
     ?assertNotEqual(Registry, Restarted),
     ?assertEqual(Breaker, seki_registry:whereis_name(?NAME)),
     ?assertEqual(closed, seki:state(?NAME)),
-    %% And it is still told when the process goes.
     ok = seki:delete_breaker(?NAME),
     _ = sys:get_state(seki_registry),
     ?assertEqual([], ets:lookup(seki_registry, ?NAME)).
@@ -272,7 +292,6 @@ a_limiter_is_named_by_a_term() ->
     ?assertMatch({allow, #{remaining := 1}}, seki:check(Name, user)),
     ?assertMatch({allow, #{remaining := 0}}, seki:check(Name, user)),
     ?assertMatch({deny, _}, seki:check(Name, user)),
-    %% Two limiters named by terms do not share their counters.
     ?assertMatch({allow, #{remaining := 1}}, seki:check(Other, user)),
     ?assertMatch({allow, #{remaining := 1}}, seki:inspect(Other, user, 1)),
     ?assertEqual(ok, seki:reset(Name, user)),
@@ -293,7 +312,6 @@ a_distributed_limiter_named_by_a_term_has_its_own_group() ->
     ?assertEqual(ok, seki:new_limiter(seki_registry_tests_pg, Opts)),
     ?assertMatch([_], pg:get_local_members(seki_pg, {seki_limiters, {pg_limiter, 1}})),
     ?assertMatch([_], pg:get_local_members(seki_pg, {seki_limiters, {pg_limiter, 2}})),
-    %% An atom keeps the group it always had.
     ?assertMatch(
         [_],
         pg:get_local_members(seki_pg, {seki_limiters, seki_limiter_seki_registry_tests_pg})
@@ -448,6 +466,28 @@ limiter_checks(Name) ->
         fun() -> seki:reset(Name, user) end,
         fun() -> seki:execute(seki_registry_tests_unknown, Name, Never) end
     ].
+
+queued(Name, Messages) ->
+    queued(Name, Messages, 100).
+
+queued(Name, Messages, 0) ->
+    error({not_queued, Name, Messages});
+queued(Name, Messages, Tries) ->
+    case queue_length(whereis(Name)) of
+        Length when Length >= Messages ->
+            ok;
+        _ ->
+            timer:sleep(20),
+            queued(Name, Messages, Tries - 1)
+    end.
+
+queue_length(Pid) when is_pid(Pid) ->
+    case process_info(Pid, message_queue_len) of
+        {message_queue_len, Length} -> Length;
+        undefined -> 0
+    end;
+queue_length(_NotRunning) ->
+    0.
 
 remote_pid() ->
     Node = ~"elsewhere@nohost",

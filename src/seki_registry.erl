@@ -2,13 +2,6 @@
 -moduledoc false.
 -behaviour(gen_server).
 
-%% Names that are not atoms, for the processes seki starts: breakers,
-%% bulkheads, load shedders, adaptive limiters and health checkers.
-%%
-%% An atom is registered as it always was, `{local, Name}`. Any other term is
-%% registered here, `{via, seki_registry, Name}`, so a breaker can be named
-%% `{payments, Tenant}` without an atom per tenant.
-%%
 %% This process owns the table and is the only one to write it. It takes the
 %% table from `seki_registry_keeper`, which inherits it back when this process
 %% dies. The names therefore outlive a restart of the registry, which monitors
@@ -20,7 +13,8 @@
 
 -define(TAB, seki_registry).
 
--type via() :: {via, ?MODULE, term()}.
+-type via() :: {via, ?MODULE, seki:name()}.
+-type names() :: #{reference() => seki:name()}.
 
 -spec start_link() -> gen_server:start_ret().
 start_link() ->
@@ -30,30 +24,28 @@ start_link() ->
 keeper_restarted() ->
     gen_server:cast(?MODULE, keeper_restarted).
 
-%% What a process named `Name` is started with.
--spec registration(term()) -> {local, atom()} | via().
+-spec registration(seki:name()) -> {local, atom()} | via().
 registration(Name) when is_atom(Name) -> {local, Name};
 registration(Name) when not is_pid(Name) -> {via, ?MODULE, Name}.
 
-%% What a process named `Name` is called with.
--spec server(term()) -> atom() | pid() | via().
+-spec server(seki:name() | pid()) -> atom() | pid() | via().
 server(Name) when is_atom(Name) -> Name;
 server(Pid) when is_pid(Pid) -> Pid;
 server(Name) -> {via, ?MODULE, Name}.
 
--spec register_name(term(), pid()) -> yes | no.
+-spec register_name(seki:name(), pid()) -> yes | no.
 register_name(Name, Pid) when is_pid(Pid), node(Pid) =:= node() ->
     case gen_server:call(?MODULE, {register, Name, Pid}) of
         yes -> yes;
         _Taken -> no
     end.
 
--spec unregister_name(term()) -> ok.
+-spec unregister_name(seki:name()) -> ok.
 unregister_name(Name) ->
     _ = gen_server:call(?MODULE, {unregister, Name}),
     ok.
 
--spec whereis_name(term()) -> pid() | undefined.
+-spec whereis_name(seki:name()) -> pid() | undefined.
 whereis_name(Name) ->
     try ets:lookup(?TAB, Name) of
         [{Name, Pid, _Monitor}] when is_pid(Pid), node(Pid) =:= node() ->
@@ -68,7 +60,7 @@ whereis_name(Name) ->
         error:badarg -> undefined
     end.
 
--spec send(term(), term()) -> pid().
+-spec send(seki:name(), term()) -> pid().
 send(Name, Message) ->
     case whereis_name(Name) of
         Pid when is_pid(Pid) ->
@@ -82,28 +74,29 @@ send(Name, Message) ->
 %% gen_server callbacks
 %%----------------------------------------------------------------------
 
+-spec init([]) -> {ok, names()} | {stop, {no_table, term()}}.
 init([]) ->
     case seki_registry_keeper:claim() of
         ok ->
-            {Registrations, Unusable} = lists:partition(fun is_registration/1, ets:tab2list(?TAB)),
-            _ = [ets:delete_object(?TAB, Row) || Row <- Unusable],
-            {ok, #{monitored(Name, Pid) => Name || {Name, Pid, _Monitor} <- Registrations}};
+            {ok, #{Monitor => Name || Row <- ets:tab2list(?TAB), {Monitor, Name} <- restore(Row)}};
         {error, Reason} ->
             {stop, {no_table, Reason}}
     end.
 
+-spec handle_call(term(), gen_server:from(), names()) -> {reply, term(), names()}.
 handle_call({register, Name, Pid}, _From, Names) when is_pid(Pid), node(Pid) =:= node() ->
     case whereis_name(Name) of
         undefined ->
-            {reply, yes, (forgotten(Name, Names))#{monitored(Name, Pid) => Name}};
+            {reply, yes, Names#{monitor_name(Name, Pid) => Name}};
         _Registered ->
             {reply, no, Names}
     end;
 handle_call({unregister, Name}, _From, Names) ->
-    {reply, ok, forgotten(Name, Names)};
+    {reply, ok, forget(Name, Names)};
 handle_call(_Request, _From, Names) ->
     {reply, {error, unknown_request}, Names}.
 
+-spec handle_cast(term(), names()) -> {noreply, names()}.
 handle_cast(keeper_restarted, Names) ->
     case whereis(seki_registry_keeper) of
         Keeper when is_pid(Keeper) -> true = ets:setopts(?TAB, {heir, Keeper, ?TAB});
@@ -113,9 +106,10 @@ handle_cast(keeper_restarted, Names) ->
 handle_cast(_Message, Names) ->
     {noreply, Names}.
 
+-spec handle_info(term(), names()) -> {noreply, names()}.
 handle_info({'DOWN', Monitor, process, _Pid, _Reason}, Names) ->
     case Names of
-        #{Monitor := Name} -> {noreply, forgotten(Name, Monitor, Names)};
+        #{Monitor := Name} -> {noreply, forget(Name, Monitor, Names)};
         #{} -> {noreply, Names}
     end;
 handle_info(_Info, Names) ->
@@ -126,25 +120,33 @@ handle_info(_Info, Names) ->
 %%----------------------------------------------------------------------
 
 %% A process that has since died is monitored too: its `DOWN` removes the row.
--spec is_registration(tuple()) -> boolean().
-is_registration({_Name, Pid, _Monitor}) when is_pid(Pid), node(Pid) =:= node() -> true;
-is_registration(_Row) -> false.
+-spec restore(tuple()) -> [{reference(), seki:name()}].
+restore({Name, Pid, _Monitor}) when is_pid(Pid), node(Pid) =:= node() ->
+    [{monitor_name(Name, Pid), Name}];
+restore(Unusable) ->
+    true = ets:delete_object(?TAB, Unusable),
+    [].
 
--spec monitored(term(), pid()) -> reference().
-monitored(Name, Pid) ->
+-spec monitor_name(seki:name(), pid()) -> reference().
+monitor_name(Name, Pid) ->
     Monitor = erlang:monitor(process, Pid),
     true = ets:insert(?TAB, {Name, Pid, Monitor}),
     Monitor.
 
--spec forgotten(term(), #{reference() => term()}) -> #{reference() => term()}.
-forgotten(Name, Names) ->
+-spec forget(seki:name(), names()) -> names().
+forget(Name, Names) ->
     case ets:lookup(?TAB, Name) of
-        [{Name, _Pid, Monitor}] when is_reference(Monitor) -> forgotten(Name, Monitor, Names);
+        [{Name, _Pid, Monitor}] when is_reference(Monitor) -> forget(Name, Monitor, Names);
         _Unregistered -> Names
     end.
 
--spec forgotten(term(), reference(), #{reference() => term()}) -> #{reference() => term()}.
-forgotten(Name, Monitor, Names) ->
+%% A name can be taken again before the `DOWN` of its last holder arrives.
+%% Its row is then under a newer monitor, and stays.
+-spec forget(seki:name(), reference(), names()) -> names().
+forget(Name, Monitor, Names) ->
     true = erlang:demonitor(Monitor, [flush]),
-    true = ets:delete(?TAB, Name),
+    case ets:lookup(?TAB, Name) of
+        [{Name, _Pid, Monitor}] -> true = ets:delete(?TAB, Name);
+        _TakenAgain -> true
+    end,
     maps:remove(Monitor, Names).
