@@ -164,7 +164,10 @@ Each node maintains local state and periodically gossips with peers via Erlang's
 This is eventually consistent — under normal conditions, rate limits converge within
 one gossip interval. During partitions, each node enforces its local view independently.
 
-Each limiter gossips in its own `pg` group, `{seki_limiters, TableName}` by default.
+Each limiter gossips in its own `pg` group by default: `{seki_limiter, Name}`,
+whatever term it is named by. Up to 0.5 the group of a limiter named `Name` was
+`{seki_limiters, seki_limiter_Name}`, so nodes on 0.5 and on 0.6 do not gossip
+with each other (see [Upgrading to 0.6](getting-started.md#upgrading-to-0-6)).
 If you set `group` yourself, use a different group per limiter: limiters that share
 a group merge each other's keys. Timestamps travel relative to the sender's clock,
 so nodes with different uptimes merge token bucket, leaky bucket and GCRA state
@@ -174,6 +177,13 @@ counts. Configure a limiter with the same algorithm on every node: gossip for
 another algorithm is ignored. Gossip from seki 0.4.x nodes is ignored too, so
 during a rolling upgrade old and new nodes enforce their limits independently
 until every node runs the new version.
+
+seki starts the `pg` scope under its own supervisor unless a scope of that
+name is already running. A scope your application started stays yours: seki
+never starts it, and when it stops the limiter counts on its own node until
+you have started it again. The gossip process of a limiter is supervised too and
+is not linked to the limiters: if it dies it is restarted on the same table,
+and no limiter is lost (see [Architecture](architecture.md#what-is-kept)).
 
 ## Telemetry Events
 

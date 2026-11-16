@@ -19,8 +19,11 @@ Two algorithms:
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/2,
+    check_options/1,
     acquire/1,
     release/2,
     call/2,
@@ -38,6 +41,7 @@ Two algorithms:
 
 -type algorithm() :: aimd | gradient.
 -type outcome() :: ok | error | timeout | drop.
+-type raised() :: {error | exit | throw, Reason :: term(), erlang:stacktrace()}.
 
 -type opts() :: #{
     algorithm => algorithm(),
@@ -52,10 +56,10 @@ Two algorithms:
     long_window => pos_integer()
 }.
 
--export_type([algorithm/0, outcome/0, opts/0]).
+-export_type([algorithm/0, outcome/0, raised/0, opts/0]).
 
 -record(state, {
-    name :: atom(),
+    name :: seki:name(),
     algorithm :: algorithm(),
     min_limit :: pos_integer(),
     max_limit :: pos_integer(),
@@ -79,25 +83,50 @@ Two algorithms:
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, [
+        {algorithm, {one_of, [aimd, gradient]}},
+        {min_limit, pos_integer},
+        {max_limit, pos_integer},
+        {initial_limit, pos_integer},
+        {backoff_ratio, positive},
+        {smoothing, positive},
+        {tolerance, positive},
+        {long_smoothing, positive}
+    ]).
 
 -doc "Acquire a concurrency slot. Returns `{error, limit_reached}` if at capacity.".
--spec acquire(atom()) -> ok | {error, limit_reached}.
+-spec acquire(seki:name()) -> ok | {error, limit_reached}.
 acquire(Name) ->
-    gen_server:call(Name, {acquire, self()}).
+    case gen_server:call(seki_registry:server(Name), {acquire, self()}) of
+        ok -> ok;
+        {error, limit_reached} -> {error, limit_reached}
+    end.
 
 -doc "Release a slot and report the outcome. The outcome adjusts the concurrency limit.".
--spec release(atom(), outcome()) -> ok.
+-spec release(seki:name(), outcome()) -> ok.
 release(Name, Outcome) ->
-    gen_server:cast(Name, {release, self(), Outcome}).
+    gen_server:cast(seki_registry:server(Name), {release, self(), Outcome}).
 
--doc "Execute a function with automatic acquire/release and outcome reporting.".
--spec call(atom(), fun(() -> term())) -> {ok, term()} | {error, limit_reached}.
+-doc """
+Execute a function with automatic acquire/release and outcome reporting.
+
+Returns `{error, {Class, Reason, Stacktrace}}` if the function raises.
+""".
+-spec call(seki:name(), fun(() -> term())) -> {ok, term()} | {error, limit_reached | raised()}.
 call(Name, Fun) ->
     call(Name, Fun, #{}).
 
 -doc "Execute a function with automatic acquire/release, outcome reporting, and options.".
--spec call(atom(), fun(() -> term()), map()) -> {ok, term()} | {error, limit_reached}.
+-spec call(seki:name(), fun(() -> term()), map()) ->
+    {ok, term()} | {error, limit_reached | raised()}.
 call(Name, Fun, _Opts) ->
     case acquire(Name) of
         ok ->
@@ -115,14 +144,25 @@ call(Name, Fun, _Opts) ->
     end.
 
 -doc "Get current adaptive limiter status (current_limit, in_flight, available).".
--spec status(atom()) ->
+-spec status(seki:name()) ->
     #{
         current_limit := pos_integer(),
         in_flight := non_neg_integer(),
         available := non_neg_integer()
     }.
 status(Name) ->
-    gen_server:call(Name, status).
+    status_reply(gen_server:call(seki_registry:server(Name), status)).
+
+-spec status_reply(term()) ->
+    #{
+        current_limit := pos_integer(),
+        in_flight := non_neg_integer(),
+        available := non_neg_integer()
+    }.
+status_reply(#{current_limit := Limit, in_flight := InFlight, available := Available}) when
+    is_integer(Limit), is_integer(InFlight), is_integer(Available)
+->
+    #{current_limit => Limit, in_flight => InFlight, available => Available}.
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks
@@ -149,7 +189,7 @@ init({Name, Opts}) ->
     },
     {ok, State}.
 
-handle_call({acquire, Pid}, _From, State) ->
+handle_call({acquire, Pid}, _From, State) when is_pid(Pid) ->
     #state{in_flight = InFlight, current_limit = Limit} = State,
     case InFlight < trunc(Limit) of
         true ->
@@ -163,9 +203,13 @@ handle_call({acquire, Pid}, _From, State) ->
             emit_acquire(State#state.name, InFlight + 1, trunc(Limit)),
             {reply, ok, NewState};
         false ->
-            logger:warning(
-                "Adaptive limiter ~p at capacity (limit=~p, in_flight=~p)",
-                [State#state.name, trunc(Limit), InFlight],
+            ?LOG_WARNING(
+                #{
+                    msg => adaptive_limit_reached,
+                    name => seki_name:label(State#state.name),
+                    limit => trunc(Limit),
+                    in_flight => InFlight
+                },
                 #{domain => [seki]}
             ),
             emit_rejected(State#state.name, trunc(Limit)),
@@ -178,10 +222,11 @@ handle_call(status, _From, State) ->
         #{
             current_limit => IntLimit,
             in_flight => InFlight,
-            available => max(0, IntLimit - InFlight)
+            available => seki_number:larger(0, IntLimit - InFlight)
         },
         State};
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown}, State}.
 
 handle_cast({release, Pid, Outcome}, State) ->
@@ -191,7 +236,7 @@ handle_cast({release, Pid, Outcome}, State) ->
             Duration = erlang:monotonic_time(millisecond) - StartTime,
             NewMonitors = maps:remove(MonRef, State#state.monitors),
             NewState0 = State#state{
-                in_flight = max(0, State#state.in_flight - 1),
+                in_flight = seki_number:larger(0, State#state.in_flight - 1),
                 monitors = NewMonitors
             },
             NewState = adjust_limit(Outcome, Duration, NewState0),
@@ -202,28 +247,34 @@ handle_cast({release, Pid, Outcome}, State) ->
         error ->
             {noreply, State}
     end;
-handle_cast(_Msg, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
 handle_info({'DOWN', MonRef, process, Pid, Reason}, State) ->
-    case maps:take(MonRef, State#state.monitors) of
-        {{_, StartTime}, NewMonitors} ->
-            logger:warning(
-                "Adaptive limiter ~p: process ~p died (~p), releasing slot",
-                [State#state.name, Pid, Reason],
+    case State#state.monitors of
+        #{MonRef := {_Holder, StartTime}} = Monitors ->
+            ?LOG_WARNING(
+                #{
+                    msg => adaptive_holder_died,
+                    name => seki_name:label(State#state.name),
+                    pid => Pid,
+                    reason => Reason
+                },
                 #{domain => [seki]}
             ),
             Duration = erlang:monotonic_time(millisecond) - StartTime,
             NewState0 = State#state{
-                in_flight = max(0, State#state.in_flight - 1),
-                monitors = NewMonitors
+                in_flight = seki_number:larger(0, State#state.in_flight - 1),
+                monitors = maps:remove(MonRef, Monitors)
             },
             NewState = adjust_limit(error, Duration, NewState0),
             {noreply, NewState};
-        error ->
+        #{} ->
             {noreply, State}
     end;
-handle_info(_Info, State) ->
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -242,20 +293,24 @@ adjust_limit(Outcome, Duration, #state{algorithm = gradient} = State) ->
 adjust_aimd(ok, _Duration, State) ->
     #state{current_limit = Limit, max_limit = MaxLimit, min_limit = MinLimit} = State,
     %% Additive increase: add 1/current_limit (so it takes ~limit successes to increase by 1)
-    NewLimit = min(MaxLimit * 1.0, Limit + 1.0 / max(1.0, Limit)),
+    NewLimit = seki_number:smaller(MaxLimit * 1.0, Limit + 1.0 / seki_number:larger(1.0, Limit)),
     emit_limit_change(State#state.name, trunc(Limit), trunc(NewLimit)),
-    State#state{current_limit = max(MinLimit * 1.0, NewLimit)};
+    State#state{current_limit = seki_number:larger(MinLimit * 1.0, NewLimit)};
 adjust_aimd(_, _Duration, State) ->
     #state{current_limit = Limit, backoff_ratio = Ratio, min_limit = MinLimit} = State,
     %% Multiplicative decrease
-    NewLimit = max(MinLimit * 1.0, Limit * Ratio),
+    NewLimit = seki_number:larger(MinLimit * 1.0, Limit * Ratio),
     OldInt = trunc(Limit),
     NewInt = trunc(NewLimit),
     case OldInt =/= NewInt of
         true ->
-            logger:notice(
-                "Adaptive limiter ~p: limit decreased ~p -> ~p",
-                [State#state.name, OldInt, NewInt],
+            ?LOG_NOTICE(
+                #{
+                    msg => adaptive_limit_decreased,
+                    name => seki_name:label(State#state.name),
+                    from => OldInt,
+                    to => NewInt
+                },
                 #{domain => [seki]}
             );
         false ->
@@ -267,14 +322,19 @@ adjust_aimd(_, _Duration, State) ->
 %% Gradient: Track latency trend
 adjust_gradient(drop, _Duration, State) ->
     #state{current_limit = Limit, min_limit = MinLimit} = State,
-    NewLimit = max(MinLimit * 1.0, Limit * 0.9),
+    NewLimit = seki_number:larger(MinLimit * 1.0, Limit * 0.9),
     OldInt = trunc(Limit),
     NewInt = trunc(NewLimit),
     case OldInt =/= NewInt of
         true ->
-            logger:notice(
-                "Adaptive limiter ~p: limit decreased ~p -> ~p (drop)",
-                [State#state.name, OldInt, NewInt],
+            ?LOG_NOTICE(
+                #{
+                    msg => adaptive_limit_decreased,
+                    name => seki_name:label(State#state.name),
+                    from => OldInt,
+                    to => NewInt,
+                    cause => drop
+                },
                 #{domain => [seki]}
             );
         false ->
@@ -303,7 +363,7 @@ adjust_gradient(ok, Duration, State) ->
     %% Calculate gradient: ratio of long-term to short-term latency
     Gradient =
         case NewShortRTT > 0.001 of
-            true -> max(0.5, min(2.0, NewLongRTT / NewShortRTT));
+            true -> seki_number:larger(0.5, seki_number:smaller(2.0, NewLongRTT / NewShortRTT));
             false -> 1.0
         end,
     %% Adjust limit based on gradient
@@ -311,10 +371,10 @@ adjust_gradient(ok, Duration, State) ->
         case Gradient >= Tolerance of
             true ->
                 %% Latency increasing — reduce limit
-                max(MinLimit * 1.0, Limit * Gradient * 0.9);
+                seki_number:larger(MinLimit * 1.0, Limit * Gradient * 0.9);
             false ->
                 %% Latency stable or improving — increase limit
-                min(MaxLimit * 1.0, Limit + 1.0 / max(1.0, Limit))
+                seki_number:smaller(MaxLimit * 1.0, Limit + 1.0 / seki_number:larger(1.0, Limit))
         end,
     emit_limit_change(State#state.name, trunc(Limit), trunc(NewLimit)),
     State#state{
@@ -322,7 +382,8 @@ adjust_gradient(ok, Duration, State) ->
         long_rtt = NewLongRTT,
         short_rtt = NewShortRTT
     };
-adjust_gradient(timeout, Duration, State) ->
+%% A timeout, and an outcome that is none of the four, lowers the limit.
+adjust_gradient(_TimeoutOrUnknown, Duration, State) ->
     adjust_gradient(drop, Duration, State).
 
 %%----------------------------------------------------------------------

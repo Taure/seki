@@ -23,7 +23,7 @@ It covers what [fuse](https://github.com/jlouis/fuse) (circuit breaking) and [Ha
 ```erlang
 %% rebar.config
 {deps, [
-    {seki, "~> 0.4"}
+    {seki, "~> 0.6"}
 ]}.
 ```
 
@@ -33,10 +33,12 @@ It covers what [fuse](https://github.com/jlouis/fuse) (circuit breaking) and [Ha
 # mix.exs
 defp deps do
   [
-    {:seki, "~> 0.4"}
+    {:seki, "~> 0.6"}
   ]
 end
 ```
+
+seki needs Erlang/OTP 28 or later. It is tested on OTP 28 and 29.
 
 ## Quick Start
 
@@ -510,6 +512,8 @@ All events use the `[seki, ...]` prefix:
 | `[seki, retry, exhausted]` | `attempts` | `name`, `error` |
 | `[seki, bulkhead, acquire]` | `current`, `available` | `name` |
 | `[seki, bulkhead, rejected]` | `current`, `available` | `name` |
+
+`name` is the term the limiter, breaker or bulkhead was named by, which can be any term. Print it with `~p` or `inspect/1`.
 
 ## OpenTelemetry
 

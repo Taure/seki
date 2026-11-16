@@ -12,6 +12,9 @@ cleanup(_) ->
 
 health_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"critical is true or false", fun critical_is_a_boolean/0},
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"starts healthy with vm checks", fun starts_healthy/0},
         {"register custom check", fun custom_check/0},
         {"critical check makes unhealthy", fun critical_unhealthy/0},
@@ -20,7 +23,9 @@ health_test_() ->
         {"readiness reflects health", fun readiness_health/0},
         {"unregister check", fun unregister/0},
         {"check_one returns single result", fun check_one/0},
-        {"exception in check returns unhealthy", fun exception_check/0}
+        {"exception in check returns unhealthy", fun exception_check/0},
+        {"vm checks run and report", fun vm_checks_run/0},
+        {"a check that returns no health is unhealthy", fun invalid_result/0}
     ]}.
 
 starts_healthy() ->
@@ -116,3 +121,100 @@ exception_check() ->
     #{health := Health} = seki_health:check(h_exc),
     ?assertEqual(unhealthy, Health),
     gen_server:stop(h_exc).
+
+vm_checks_run() ->
+    {ok, _} = seki_health:start_link(h_vm, #{check_interval => 60000}),
+    ?assertMatch(
+        {healthy, #{total_mb := Total, process_mb := Processes}} when
+            is_integer(Total) andalso is_integer(Processes),
+        seki_health:check_one(h_vm, vm_memory)
+    ),
+    ?assertMatch(
+        {_, #{count := _, limit := _, utilization := _}},
+        seki_health:check_one(h_vm, vm_processes)
+    ),
+    ?assertMatch(
+        {_, #{total_run_queue := _, schedulers := _, per_scheduler := _}},
+        seki_health:check_one(h_vm, vm_run_queue)
+    ),
+    #{checks := Checks} = seki_health:check(h_vm),
+    ?assertEqual([vm_memory, vm_processes, vm_run_queue], lists:sort(maps:keys(Checks))),
+    gen_server:stop(h_vm).
+
+invalid_result() ->
+    {ok, Checker} = seki_health:start_link(h_invalid, #{
+        vm_checks => false, check_interval => 60000
+    }),
+    Checks = #{
+        no_tuple => ok,
+        no_health => {fine, #{}},
+        no_details => {healthy, none}
+    },
+    [
+        ok = seki_health:register_check(h_invalid, CheckName, returning(Returned))
+     || CheckName := Returned <:- Checks
+    ],
+    ?assertMatch(
+        #{health := degraded, checks := #{no_tuple := {unhealthy, _}}},
+        seki_health:check(h_invalid)
+    ),
+    [
+        ?assertEqual(
+            {unhealthy, #{error => {invalid_result, Returned}}},
+            seki_health:check_one(h_invalid, CheckName)
+        )
+     || CheckName := Returned <:- Checks
+    ],
+    ?assertEqual(Checker, whereis(h_invalid)),
+    gen_server:stop(h_invalid).
+
+returning(Returned) ->
+    fun() -> Returned end.
+
+unexpected_messages_are_dropped() ->
+    {ok, Pid} = seki_health:start_link(h_stray, #{vm_checks => false, check_interval => 60000}),
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_health, {error, unknown})).
+
+invalid_options_are_refused() ->
+    Supervisor = whereis(seki_process_sup),
+    [
+        begin
+            ?assertEqual(
+                {error, {invalid_option, Key}}, seki:new_health(h_invalid, option(Key, Value))
+            ),
+            ?assertEqual(
+                {error, {invalid_option, Key}},
+                seki_health:start_link(h_invalid, option(Key, Value))
+            )
+        end
+     || {Key, Value} <:- [
+            {vm_checks, yes}, {check_interval, 0}, {check_interval, never}
+        ]
+    ],
+    ?assertEqual({error, invalid_options}, seki_health:check_options([])),
+    ?assertEqual(undefined, whereis(h_invalid)),
+    ?assertEqual(Supervisor, whereis(seki_process_sup)),
+    {ok, _} = seki:new_health(h_invalid, #{
+        vm_checks => false, check_interval => 1, some_other_key => kept
+    }),
+    ?assertEqual(ok, seki_health:readiness(h_invalid)),
+    seki:delete_health(h_invalid).
+
+critical_is_a_boolean() ->
+    {ok, Pid} = seki_health:start_link(h_critical, #{vm_checks => false, check_interval => 60000}),
+    Down = fun() -> {unhealthy, #{}} end,
+    ?assertError(
+        {badmatch, {error, unknown}},
+        seki_health:register_check(h_critical, db, Down, #{critical => yes})
+    ),
+    ?assertMatch(
+        #{health := healthy, checks := Checks} when map_size(Checks) =:= 0,
+        seki_health:check(h_critical)
+    ),
+    ok = seki_health:register_check(h_critical, db, Down, #{critical => true}),
+    ?assertMatch(#{health := unhealthy}, seki_health:check(h_critical)),
+    ?assert(is_process_alive(Pid)).
+
+-spec option(atom(), term()) -> map().
+option(Key, Value) ->
+    #{Key => Value}.

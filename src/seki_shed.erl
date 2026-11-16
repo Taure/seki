@@ -24,8 +24,11 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     start_link/2,
+    check_options/1,
     admit/2,
     admit/1,
     complete/2,
@@ -57,7 +60,7 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 -export_type([priority/0, opts/0]).
 
 -record(state, {
-    name :: atom(),
+    name :: seki:name(),
     %% CoDel state
     target :: pos_integer(),
     interval :: pos_integer(),
@@ -85,27 +88,48 @@ exceeds a target. Priority levels (0-3) control which requests are shed first:
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_server:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_server:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, [
+        {target, pos_integer},
+        {interval, pos_integer},
+        {max_in_flight, pos_integer},
+        {p1_threshold, percent},
+        {p2_threshold, percent},
+        {p3_threshold, percent}
+    ]).
 
 -doc "Admit a request with default priority (P2 = normal).".
--spec admit(atom()) -> ok | {error, shed}.
+-spec admit(seki:name()) -> ok | {error, shed}.
 admit(Name) ->
     admit(Name, 2).
 
 -doc "Admit a request with the given priority (0 = critical, 3 = low).".
--spec admit(atom(), priority()) -> ok | {error, shed}.
+-spec admit(seki:name(), priority()) -> ok | {error, shed}.
 admit(Name, Priority) ->
-    gen_server:call(Name, {admit, Priority}).
+    case gen_server:call(seki_registry:server(Name), {admit, Priority}) of
+        ok -> ok;
+        {error, shed} -> {error, shed}
+    end.
 
 -doc "Signal request completion with duration in ms. Updates CoDel state.".
--spec complete(atom(), non_neg_integer()) -> ok.
+-spec complete(seki:name(), non_neg_integer()) -> ok.
 complete(Name, DurationMs) ->
-    gen_server:cast(Name, {complete, DurationMs}).
+    gen_server:cast(seki_registry:server(Name), {complete, DurationMs}).
 
 -doc "Get current load shedder status (in_flight, utilization, dropping, stats).".
--spec status(atom()) -> map().
+-spec status(seki:name()) -> map().
 status(Name) ->
-    gen_server:call(Name, status).
+    status_reply(gen_server:call(seki_registry:server(Name), status)).
+
+-spec status_reply(term()) -> map().
+status_reply(Status) when is_map(Status) -> Status.
 
 %%----------------------------------------------------------------------
 %% gen_server callbacks
@@ -145,9 +169,14 @@ handle_call({admit, Priority}, _From, State) ->
             NewState = State#state{
                 total_shed = State#state.total_shed + 1
             },
-            logger:warning(
-                "Load shedder ~p: request shed (priority=~p, in_flight=~p/~p)",
-                [State#state.name, Priority, State#state.in_flight, State#state.max_in_flight],
+            ?LOG_WARNING(
+                #{
+                    msg => request_shed,
+                    name => seki_name:label(State#state.name),
+                    priority => Priority,
+                    in_flight => State#state.in_flight,
+                    max_in_flight => State#state.max_in_flight
+                },
                 #{domain => [seki]}
             ),
             emit_shed(State#state.name, Priority, State#state.in_flight),
@@ -166,7 +195,7 @@ handle_call(status, _From, State) ->
         #{
             in_flight => InFlight,
             max_in_flight => Max,
-            utilization => InFlight / max(1, Max),
+            utilization => InFlight / seki_number:larger(1, Max),
             dropping => Dropping,
             drop_count => State#state.drop_count,
             total_admitted => Admitted,
@@ -174,23 +203,27 @@ handle_call(status, _From, State) ->
             avg_latency_ms => AvgLatency
         },
         State};
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown}, State}.
 
-handle_cast({complete, DurationMs}, State) ->
-    NewState0 = State#state{
-        in_flight = max(0, State#state.in_flight - 1)
-    },
-    NewState = update_codel(DurationMs, NewState0),
-    {noreply, NewState};
-handle_cast(_Msg, State) ->
+handle_cast({complete, DurationMs}, State) when is_number(DurationMs) ->
+    {noreply, update_codel(DurationMs, completed(State))};
+handle_cast({complete, _NotADuration}, State) ->
+    {noreply, completed(State)};
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
     {noreply, State}.
 
-handle_info(_Info, State) ->
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
     ok.
+
+completed(State) ->
+    State#state{in_flight = seki_number:larger(0, State#state.in_flight - 1)}.
 
 %%----------------------------------------------------------------------
 %% Admission logic
@@ -205,7 +238,7 @@ should_admit(Priority, State) ->
         max_in_flight = Max,
         dropping = Dropping
     } = State,
-    Utilization = InFlight / max(1, Max),
+    Utilization = InFlight / seki_number:larger(1, Max),
     Threshold = priority_threshold(Priority, State),
     case Utilization >= Threshold of
         true ->
@@ -243,9 +276,8 @@ update_codel(DurationMs, State) ->
             %% Sojourn time below target — reset
             case Dropping of
                 true ->
-                    logger:notice(
-                        "Load shedder ~p: CoDel exiting drop mode",
-                        [State#state.name],
+                    ?LOG_NOTICE(
+                        #{msg => codel_drop_mode_left, name => seki_name:label(State#state.name)},
                         #{domain => [seki]}
                     );
                 false ->
@@ -264,9 +296,12 @@ update_codel(DurationMs, State) ->
             %% Check if we've been above target for an interval
             case Now - FirstAbove >= Interval of
                 true ->
-                    logger:warning(
-                        "Load shedder ~p: CoDel entering drop mode (drop_count=~p)",
-                        [State#state.name, DropCount + 1],
+                    ?LOG_WARNING(
+                        #{
+                            msg => codel_drop_mode_entered,
+                            name => seki_name:label(State#state.name),
+                            drop_count => DropCount + 1
+                        },
                         #{domain => [seki]}
                     ),
                     emit_codel_drop(State#state.name, DropCount + 1),
@@ -314,8 +349,7 @@ record_latency(DurationMs, #state{recent_latencies = Q, latency_count = Count} =
 avg_latency(#state{latency_count = 0}) ->
     0;
 avg_latency(#state{recent_latencies = Q, latency_count = Count}) ->
-    Sum = queue:fold(fun(V, Acc) -> Acc + V end, 0, Q),
-    Sum / Count.
+    lists:sum(queue:to_list(Q)) / Count.
 
 %%----------------------------------------------------------------------
 %% Telemetry

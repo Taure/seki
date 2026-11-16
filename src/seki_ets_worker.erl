@@ -5,8 +5,7 @@
 
 -export([
     start_link/1,
-    names/0,
-    publish_names/1,
+    child_specs/0,
     route/2,
     atomic_update/3
 ]).
@@ -14,49 +13,57 @@
 -export([
     init/1,
     handle_call/3,
-    handle_cast/2
+    handle_cast/2,
+    handle_info/2
 ]).
 
--define(NAMES_KEY, {?MODULE, names}).
+-define(COUNT_KEY, {?MODULE, count}).
 -define(CALL_TIMEOUT, 1000).
 
--spec start_link(atom()) -> gen_server:start_ret().
-start_link(Name) ->
-    gen_server:start_link({local, Name}, ?MODULE, [], []).
+-spec start_link(pos_integer()) -> gen_server:start_ret().
+start_link(Index) ->
+    gen_server:start_link(?MODULE, Index, []).
 
--spec names() -> [atom()].
-names() ->
+%% One worker per scheduler. Each publishes its pid under its own key when it
+%% starts, so a restart replaces one pid: a term of one word, which costs no
+%% global garbage collection to replace.
+-spec child_specs() -> [supervisor:child_spec()].
+child_specs() ->
+    Count = erlang:system_info(schedulers_online),
+    ok = persistent_term:put(?COUNT_KEY, Count),
     [
-        list_to_atom("seki_ets_worker_" ++ integer_to_list(I))
-     || I <- lists:seq(1, erlang:system_info(schedulers_online))
+        #{id => {?MODULE, Index}, start => {?MODULE, start_link, [Index]}}
+     || Index <- lists:seq(1, Count)
     ].
 
--spec publish_names([atom()]) -> ok.
-publish_names(Names) ->
-    persistent_term:put(?NAMES_KEY, list_to_tuple(Names)).
-
--spec route(ets:table(), term()) -> {worker, atom()} | local.
+-spec route(ets:table(), term()) -> {worker, pid()} | local.
 route(Tab, StorageKey) ->
-    case persistent_term:get(?NAMES_KEY, undefined) of
-        Names when is_tuple(Names), tuple_size(Names) > 0 ->
-            worker(element(erlang:phash2({Tab, StorageKey}, tuple_size(Names)) + 1, Names));
+    case persistent_term:get(?COUNT_KEY, undefined) of
+        Count when is_integer(Count), Count > 0 ->
+            worker(erlang:phash2({Tab, StorageKey}, Count) + 1);
         _ ->
             local
     end.
 
-worker(Name) when is_atom(Name) -> {worker, Name};
-worker(_Name) -> local.
+worker(Index) ->
+    case persistent_term:get({?MODULE, Index}, undefined) of
+        Worker when is_pid(Worker) -> {worker, Worker};
+        _ -> local
+    end.
 
 -spec atomic_update(ets:table(), term(), seki_ets:step()) -> {ok, term()} | {error, contention}.
 atomic_update(Tab, StorageKey, Step) ->
     case route(Tab, StorageKey) of
-        {worker, Name} -> call(Name, Tab, StorageKey, Step);
+        {worker, Worker} -> call(Worker, Tab, StorageKey, Step);
         local -> seki_ets:local_update(Tab, StorageKey, Step)
     end.
 
-call(Name, Tab, StorageKey, Step) ->
-    Deadline = erlang:monotonic_time(millisecond) + ?CALL_TIMEOUT,
-    try call_worker(Name, {atomic_update, Deadline, Tab, StorageKey, Step}) of
+%% The pid of a worker that died stays published until its successor starts.
+%% A call to it exits at once, and the caller then runs the step itself.
+call(Worker, Tab, StorageKey, Step) ->
+    Timeout = ?CALL_TIMEOUT,
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
+    try call_worker(Worker, {atomic_update, Deadline, Tab, StorageKey, Step}, Timeout) of
         {raise, Class, Reason, Stacktrace} -> erlang:raise(Class, Reason, Stacktrace);
         Reply -> Reply
     catch
@@ -64,12 +71,15 @@ call(Name, Tab, StorageKey, Step) ->
         exit:_ -> seki_ets:local_update(Tab, StorageKey, Step)
     end.
 
--spec call_worker(atom(), {atomic_update, integer(), ets:table(), term(), seki_ets:step()}) ->
+-spec call_worker(
+    pid(), {atomic_update, integer(), ets:table(), term(), seki_ets:step()}, pos_integer()
+) ->
     dynamic().
-call_worker(Name, Request) ->
-    gen_server:call(Name, Request, ?CALL_TIMEOUT).
+call_worker(Worker, Request, Timeout) ->
+    gen_server:call(Worker, Request, Timeout).
 
-init([]) ->
+init(Index) ->
+    ok = persistent_term:put({?MODULE, Index}, self()),
     {ok, #{}}.
 
 %% A caller past its deadline has already been denied, so running its step
@@ -81,10 +91,16 @@ handle_call({atomic_update, Deadline, Tab, StorageKey, Step}, _From, State) ->
             false -> run(Tab, StorageKey, Step)
         end,
     {reply, Reply, State};
-handle_call(_Request, _From, State) ->
+handle_call(Request, _From, State) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
     {reply, {error, unknown_request}, State}.
 
-handle_cast(_Msg, State) ->
+handle_cast(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
+    {noreply, State}.
+
+handle_info(Message, State) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
     {noreply, State}.
 
 run(Tab, StorageKey, Step) ->

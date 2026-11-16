@@ -6,7 +6,8 @@
 -export([
     start_link/0,
     start_breaker/2,
-    stop_breaker/1
+    stop_breaker/1,
+    named/0
 ]).
 
 -export([init/1]).
@@ -14,29 +15,34 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_breaker(atom(), seki:breaker_opts()) -> {ok, pid()} | {error, term()}.
+-spec start_breaker(seki:name(), seki:breaker_opts()) -> {ok, pid()} | {error, term()}.
+start_breaker(Pid, _Opts) when is_pid(Pid) ->
+    {error, {invalid_name, Pid}};
 start_breaker(Name, Opts) ->
-    ChildSpec = #{
+    case seki_breaker:check_options(Opts) of
+        ok -> start_child(Name, Opts);
+        {error, Reason} -> {error, Reason}
+    end.
+
+start_child(Name, Opts) ->
+    seki_name_sup:start(?MODULE, #{
         id => Name,
         start => {seki_breaker, start_link, [Name, Opts]},
         restart => transient,
         shutdown => 5000
-    },
-    supervisor:start_child(?MODULE, ChildSpec).
+    }).
 
--spec stop_breaker(atom()) -> ok | {error, term()}.
+-spec stop_breaker(seki:name()) -> ok | {error, term()}.
 stop_breaker(Name) ->
-    case supervisor:terminate_child(?MODULE, Name) of
-        ok ->
-            supervisor:delete_child(?MODULE, Name);
-        Error ->
-            Error
-    end.
+    Stopped = seki_name_sup:stop(?MODULE, Name),
+    ok = seki_breaker_trips:closed(Name),
+    Stopped.
 
+-spec named() -> [{seki:name(), pid()}].
+named() ->
+    seki_registry:named_children(?MODULE).
+
+%% Every child is temporary, so this supervisor restarts nothing and its
+%% restart intensity is never used.
 init([]) ->
-    SupFlags = #{
-        strategy => one_for_one,
-        intensity => 10,
-        period => 60
-    },
-    {ok, {SupFlags, []}}.
+    {ok, {#{strategy => one_for_one}, []}}.

@@ -23,7 +23,9 @@ Call `seki_otel:setup/0` in your application start callback.
     handle_bulkhead/4
 ]).
 
--define(HANDLER_ID_PREFIX, seki_otel).
+-ifdef(TEST).
+-export([name_attribute/1, measurements_to_attrs/1]).
+-endif.
 
 -doc "Attach OTel handlers to all Seki telemetry events.".
 -spec setup() -> ok.
@@ -33,58 +35,25 @@ setup() ->
 -doc "Attach OTel handlers with options.".
 -spec setup(map()) -> ok.
 setup(_Opts) ->
-    Events = [
-        {[seki, rate_limit, allow], fun ?MODULE:handle_rate_limit/4},
-        {[seki, rate_limit, deny], fun ?MODULE:handle_rate_limit/4},
-        {[seki, rate_limit, denied], fun ?MODULE:handle_rate_limit/4},
-        {[seki, breaker, state_change], fun ?MODULE:handle_breaker_state_change/4},
-        {[seki, breaker, call], fun ?MODULE:handle_breaker_call/4},
-        {[seki, retry, attempt], fun ?MODULE:handle_retry/4},
-        {[seki, retry, retry], fun ?MODULE:handle_retry/4},
-        {[seki, retry, success], fun ?MODULE:handle_retry/4},
-        {[seki, retry, exhausted], fun ?MODULE:handle_retry/4},
-        {[seki, bulkhead, acquire], fun ?MODULE:handle_bulkhead/4},
-        {[seki, bulkhead, release], fun ?MODULE:handle_bulkhead/4},
-        {[seki, bulkhead, rejected], fun ?MODULE:handle_bulkhead/4}
-    ],
-    lists:foreach(
-        fun({Event, Handler}) ->
-            HandlerId = handler_id(Event),
-            telemetry:attach(HandlerId, Event, Handler, #{})
-        end,
-        Events
-    ),
+    _ = [telemetry:attach(Id, Event, Handler, #{}) || {Id, Event, Handler} <- handlers()],
     ok.
 
 -doc "Detach all OTel handlers.".
 -spec teardown() -> ok.
 teardown() ->
-    Events = [
-        [seki, rate_limit, allow],
-        [seki, rate_limit, deny],
-        [seki, rate_limit, denied],
-        [seki, breaker, state_change],
-        [seki, breaker, call],
-        [seki, retry, attempt],
-        [seki, retry, retry],
-        [seki, retry, success],
-        [seki, retry, exhausted],
-        [seki, bulkhead, acquire],
-        [seki, bulkhead, release],
-        [seki, bulkhead, rejected]
-    ],
-    lists:foreach(
-        fun(Event) ->
-            telemetry:detach(handler_id(Event))
-        end,
-        Events
-    ),
+    _ = [telemetry:detach(Id) || {Id, _Event, _Handler} <- handlers()],
     ok.
 
 %%----------------------------------------------------------------------
 %% Telemetry Handlers (exported for telemetry:attach)
 %%----------------------------------------------------------------------
 
+-spec handle_rate_limit(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_rate_limit(Event, Measurements, Metadata, _Config) ->
     try
         otel_ctx:get_current(),
@@ -93,12 +62,12 @@ handle_rate_limit(Event, Measurements, Metadata, _Config) ->
             undefined ->
                 ok;
             _ ->
-                Action = lists:last(Event),
+                Action = action(Event),
                 Name = maps:get(name, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => rate_limit,
                     'seki.action' => Action,
-                    'seki.name' => Name
+                    'seki.name' => name_attribute(Name)
                 },
                 AllAttrs = maps:merge(Attrs, measurements_to_attrs(Measurements)),
                 otel_span:add_event(SpanCtx, <<"seki.rate_limit">>, AllAttrs)
@@ -112,6 +81,12 @@ handle_rate_limit(Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_breaker_state_change(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -124,7 +99,7 @@ handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
                 To = maps:get(to, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => circuit_breaker,
-                    'seki.name' => Name,
+                    'seki.name' => name_attribute(Name),
                     'seki.breaker.from' => From,
                     'seki.breaker.to' => To
                 },
@@ -140,6 +115,12 @@ handle_breaker_state_change(_Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_breaker_call(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -152,7 +133,7 @@ handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
                 Outcome = maps:get(outcome, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => circuit_breaker,
-                    'seki.name' => Name,
+                    'seki.name' => name_attribute(Name),
                     'seki.breaker.state' => State,
                     'seki.breaker.outcome' => Outcome,
                     'seki.breaker.duration_ms' => maps:get(duration, Measurements, 0)
@@ -168,6 +149,12 @@ handle_breaker_call(_Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_retry(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_retry(Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -175,12 +162,12 @@ handle_retry(Event, Measurements, Metadata, _Config) ->
             undefined ->
                 ok;
             _ ->
-                Action = lists:last(Event),
+                Action = action(Event),
                 Name = maps:get(name, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => retry,
                     'seki.action' => Action,
-                    'seki.name' => Name
+                    'seki.name' => name_attribute(Name)
                 },
                 AllAttrs = maps:merge(Attrs, measurements_to_attrs(Measurements)),
                 otel_span:add_event(SpanCtx, <<"seki.retry">>, AllAttrs)
@@ -194,6 +181,12 @@ handle_retry(Event, Measurements, Metadata, _Config) ->
             )
     end.
 
+-spec handle_bulkhead(
+    telemetry:event_name(),
+    telemetry:event_measurements(),
+    telemetry:event_metadata(),
+    telemetry:handler_config()
+) -> term().
 handle_bulkhead(Event, Measurements, Metadata, _Config) ->
     try
         SpanCtx = otel_tracer:current_span_ctx(),
@@ -201,12 +194,12 @@ handle_bulkhead(Event, Measurements, Metadata, _Config) ->
             undefined ->
                 ok;
             _ ->
-                Action = lists:last(Event),
+                Action = action(Event),
                 Name = maps:get(name, Metadata, undefined),
                 Attrs = #{
                     'seki.component' => bulkhead,
                     'seki.action' => Action,
-                    'seki.name' => Name
+                    'seki.name' => name_attribute(Name)
                 },
                 AllAttrs = maps:merge(Attrs, measurements_to_attrs(Measurements)),
                 otel_span:add_event(SpanCtx, <<"seki.bulkhead">>, AllAttrs)
@@ -224,20 +217,45 @@ handle_bulkhead(Event, Measurements, Metadata, _Config) ->
 %% Internal
 %%----------------------------------------------------------------------
 
-handler_id(Event) ->
-    list_to_atom(
-        lists:flatten(io_lib:format("~p_~s", [?HANDLER_ID_PREFIX, event_to_string(Event)]))
-    ).
+handlers() ->
+    [
+        {seki_otel_seki_rate_limit_allow, [seki, rate_limit, allow],
+            fun ?MODULE:handle_rate_limit/4},
+        {seki_otel_seki_rate_limit_deny, [seki, rate_limit, deny], fun ?MODULE:handle_rate_limit/4},
+        {seki_otel_seki_rate_limit_denied, [seki, rate_limit, denied],
+            fun ?MODULE:handle_rate_limit/4},
+        {seki_otel_seki_breaker_state_change, [seki, breaker, state_change],
+            fun ?MODULE:handle_breaker_state_change/4},
+        {seki_otel_seki_breaker_call, [seki, breaker, call], fun ?MODULE:handle_breaker_call/4},
+        {seki_otel_seki_retry_attempt, [seki, retry, attempt], fun ?MODULE:handle_retry/4},
+        {seki_otel_seki_retry_retry, [seki, retry, retry], fun ?MODULE:handle_retry/4},
+        {seki_otel_seki_retry_success, [seki, retry, success], fun ?MODULE:handle_retry/4},
+        {seki_otel_seki_retry_exhausted, [seki, retry, exhausted], fun ?MODULE:handle_retry/4},
+        {seki_otel_seki_bulkhead_acquire, [seki, bulkhead, acquire], fun ?MODULE:handle_bulkhead/4},
+        {seki_otel_seki_bulkhead_release, [seki, bulkhead, release], fun ?MODULE:handle_bulkhead/4},
+        {seki_otel_seki_bulkhead_rejected, [seki, bulkhead, rejected],
+            fun ?MODULE:handle_bulkhead/4}
+    ].
 
-event_to_string(Event) ->
-    string:join([atom_to_list(A) || A <- Event], "_").
+%% A span attribute is an atom, a binary or a number: a name that is some
+%% other term is recorded as it prints, to a limited depth.
+name_attribute(Name) -> seki_name:label(Name).
+
+-spec action(telemetry:event_name()) -> atom().
+action([Action]) -> Action;
+action([_Segment | Rest]) -> action(Rest).
 
 measurements_to_attrs(Measurements) ->
-    maps:fold(
-        fun(K, V, Acc) ->
-            Key = list_to_atom("seki." ++ atom_to_list(K)),
-            Acc#{Key => V}
-        end,
-        #{},
-        Measurements
-    ).
+    #{attribute_key(Key) => Value || Key := Value <- Measurements}.
+
+attribute_key(remaining) -> 'seki.remaining';
+attribute_key(cost) -> 'seki.cost';
+attribute_key(retry_after) -> 'seki.retry_after';
+attribute_key(count) -> 'seki.count';
+attribute_key(system_time) -> 'seki.system_time';
+attribute_key(attempt) -> 'seki.attempt';
+attribute_key(attempts) -> 'seki.attempts';
+attribute_key(delay) -> 'seki.delay';
+attribute_key(current) -> 'seki.current';
+attribute_key(available) -> 'seki.available';
+attribute_key(Key) -> <<"seki.", (atom_to_binary(Key))/binary>>.

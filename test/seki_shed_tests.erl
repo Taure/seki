@@ -12,6 +12,9 @@ cleanup(_) ->
 
 shed_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"a completion with no duration frees its place", fun completion_without_duration/0},
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"admits requests under capacity", fun admits_under_capacity/0},
         {"sheds when at capacity", fun sheds_at_capacity/0},
         {"p0 always admitted", fun p0_always_admitted/0},
@@ -132,3 +135,59 @@ complete_reduces() ->
     timer:sleep(10),
     #{in_flight := 0} = seki_shed:status(sh_comp),
     gen_server:stop(sh_comp).
+
+unexpected_messages_are_dropped() ->
+    {ok, Pid} = seki_shed:start_link(sh_stray, #{}),
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_shed, {error, unknown})).
+
+invalid_options_are_refused() ->
+    Supervisor = whereis(seki_process_sup),
+    [
+        begin
+            ?assertEqual(
+                {error, {invalid_option, Key}}, seki:new_shed(sh_invalid, option(Key, Value))
+            ),
+            ?assertEqual(
+                {error, {invalid_option, Key}}, seki_shed:start_link(sh_invalid, option(Key, Value))
+            )
+        end
+     || {Key, Value} <:- [
+            {target, 0},
+            {target, soon},
+            {interval, 0},
+            {interval, often},
+            {max_in_flight, 0},
+            {max_in_flight, unlimited},
+            {p1_threshold, 0},
+            {p2_threshold, 101},
+            {p3_threshold, low}
+        ]
+    ],
+    ?assertEqual({error, invalid_options}, seki_shed:check_options([])),
+    ?assertEqual(undefined, whereis(sh_invalid)),
+    ?assertEqual(Supervisor, whereis(seki_process_sup)),
+    {ok, _} = seki:new_shed(sh_invalid, #{
+        target => 1,
+        interval => 1,
+        max_in_flight => 1,
+        p1_threshold => 100,
+        p2_threshold => 1,
+        p3_threshold => 0.5,
+        some_other_key => kept
+    }),
+    ?assertEqual(ok, seki_shed:admit(sh_invalid, 0)),
+    seki:delete_shed(sh_invalid).
+
+completion_without_duration() ->
+    {ok, Pid} = seki_shed:start_link(sh_no_duration, #{max_in_flight => 10}),
+    ok = seki_shed:admit(sh_no_duration),
+    ok = seki_shed:admit(sh_no_duration),
+    ok = gen_server:cast(Pid, {complete, not_a_duration}),
+    ?assertMatch(#{in_flight := 1, avg_latency_ms := 0}, seki_shed:status(sh_no_duration)),
+    ok = seki_shed:complete(sh_no_duration, 4),
+    ?assertMatch(#{in_flight := 0, avg_latency_ms := 4.0}, seki_shed:status(sh_no_duration)),
+    ?assert(is_process_alive(Pid)).
+
+-spec option(atom(), term()) -> map().
+option(Key, Value) ->
+    #{Key => Value}.

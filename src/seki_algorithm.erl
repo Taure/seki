@@ -66,9 +66,9 @@ step(not_found, token_bucket, Cost, Now, #{window := Window, burst := Burst}) ->
     end;
 step({ok, {Tokens, LastRefill}}, token_bucket, Cost, Now0, #{window := Window, burst := Burst}) ->
     RefillRate = Burst / Window,
-    Now = max(Now0, LastRefill),
+    Now = seki_number:larger(Now0, LastRefill),
     Elapsed = Now - LastRefill,
-    Refilled = min(Burst * 1.0, Tokens + Elapsed * RefillRate),
+    Refilled = seki_number:smaller(Burst * 1.0, Tokens + Elapsed * RefillRate),
     Remaining = Refilled - Cost,
     case Remaining >= 0 of
         true ->
@@ -79,7 +79,7 @@ step({ok, {Tokens, LastRefill}}, token_bucket, Cost, Now0, #{window := Window, b
             };
         false ->
             DeficitMs = trunc((-Remaining) / RefillRate),
-            {{deny, #{retry_after => max(1, DeficitMs)}}, {write, {Refilled, Now}}}
+            {{deny, #{retry_after => seki_number:larger(1, DeficitMs)}}, {write, {Refilled, Now}}}
     end;
 %%----------------------------------------------------------------------
 %% Sliding Window Counter (Cloudflare-style)
@@ -90,11 +90,11 @@ step({ok, {Tokens, LastRefill}}, token_bucket, Cost, Now0, #{window := Window, b
 
 step(Current, sliding_window, Cost, Now, #{limit := Limit, window := Window}) ->
     {PrevCount, CurrCount, WinStart} = Rolled = roll_window(Current, Now, Window),
-    Weight = max(0.0, (Window - (Now - WinStart)) / Window),
+    Weight = seki_number:larger(0.0, (Window - (Now - WinStart)) / Window),
     EstimatedCount = PrevCount * Weight + CurrCount + Cost,
     case EstimatedCount =< Limit of
         true ->
-            Remaining = max(0, trunc(Limit - EstimatedCount)),
+            Remaining = seki_number:larger(0, trunc(Limit - EstimatedCount)),
             Reset = WinStart + Window - Now,
             {
                 {allow, #{remaining => Remaining, reset => Reset}},
@@ -116,12 +116,12 @@ step(not_found, gcra, Cost, Now, #{emission_interval := T, limit := Limit}) ->
     {{allow, #{remaining => Limit - Cost, reset => Increment}}, {write, Now + Increment}};
 step({ok, TAT}, gcra, Cost, Now, #{emission_interval := T, burst_tolerance := Tau}) ->
     Increment = T * Cost,
-    NewTAT = max(TAT, Now) + Increment,
+    NewTAT = seki_number:larger(TAT, Now) + Increment,
     AllowAt = NewTAT - Tau - Increment,
     case Now >= AllowAt of
         true ->
-            Remaining = max(0, trunc((Tau + Increment - (NewTAT - Now)) / T)),
-            Reset = max(0, NewTAT - Now),
+            Remaining = seki_number:larger(0, trunc((Tau + Increment - (NewTAT - Now)) / T)),
+            Reset = seki_number:larger(0, NewTAT - Now),
             {{allow, #{remaining => Remaining, reset => Reset}}, {write, NewTAT}};
         false ->
             {{deny, #{retry_after => AllowAt - Now}}, keep}
@@ -146,18 +146,18 @@ step(not_found, leaky_bucket, Cost, Now, #{limit := Limit, window := Window}) ->
     end;
 step({ok, {Level, LastDrain}}, leaky_bucket, Cost, Now0, #{limit := Limit, window := Window}) ->
     DrainRate = Limit / Window,
-    Now = max(Now0, LastDrain),
+    Now = seki_number:larger(Now0, LastDrain),
     Elapsed = Now - LastDrain,
-    Drained = max(0.0, Level - Elapsed * DrainRate),
+    Drained = seki_number:larger(0.0, Level - Elapsed * DrainRate),
     NewLevel = Drained + Cost,
     case NewLevel =< Limit of
         true ->
-            Remaining = max(0, trunc(Limit - NewLevel)),
+            Remaining = seki_number:larger(0, trunc(Limit - NewLevel)),
             Reset = trunc(NewLevel / DrainRate),
             {{allow, #{remaining => Remaining, reset => Reset}}, {write, {NewLevel, Now}}};
         false ->
             Overflow = NewLevel - Limit,
-            RetryAfter = max(1, trunc(Overflow / DrainRate)),
+            RetryAfter = seki_number:larger(1, trunc(Overflow / DrainRate)),
             {{deny, #{retry_after => RetryAfter}}, {write, {Drained, Now}}}
     end.
 
@@ -173,13 +173,13 @@ inspect(token_bucket, Backend, State, Key, Cost, Now, Config) ->
         not_found ->
             {allow, #{remaining => Burst, reset => 0}};
         {ok, {Tokens, LastRefill}} ->
-            Elapsed = max(0, Now - LastRefill),
-            Refilled = min(Burst * 1.0, Tokens + Elapsed * RefillRate),
+            Elapsed = seki_number:larger(0, Now - LastRefill),
+            Refilled = seki_number:smaller(Burst * 1.0, Tokens + Elapsed * RefillRate),
             case Refilled >= Cost of
                 true ->
                     {allow, #{remaining => trunc(Refilled), reset => 0}};
                 false ->
-                    DeficitMs = max(1, trunc((Cost - Refilled) / RefillRate)),
+                    DeficitMs = seki_number:larger(1, trunc((Cost - Refilled) / RefillRate)),
                     {deny, #{retry_after => DeficitMs}}
             end
     end;
@@ -190,12 +190,12 @@ inspect(sliding_window, Backend, State, Key, Cost, Now, Config) ->
             {allow, #{remaining => Limit, reset => 0}};
         {ok, {PrevCount, CurrCount, WinStart}} ->
             Elapsed = Now - WinStart,
-            Weight = max(0.0, (Window - Elapsed) / Window),
+            Weight = seki_number:larger(0.0, (Window - Elapsed) / Window),
             EstimatedCount = PrevCount * Weight + CurrCount + Cost,
             case EstimatedCount =< Limit of
                 true ->
                     {allow, #{
-                        remaining => max(0, trunc(Limit - EstimatedCount)),
+                        remaining => seki_number:larger(0, trunc(Limit - EstimatedCount)),
                         reset => WinStart + Window - Now
                     }};
                 false ->
@@ -211,12 +211,14 @@ inspect(gcra, Backend, State, Key, Cost, Now, Config) ->
             #{limit := Limit} = Config,
             {allow, #{remaining => Limit, reset => 0}};
         {ok, TAT} ->
-            NewTAT = max(TAT, Now) + Increment,
+            NewTAT = seki_number:larger(TAT, Now) + Increment,
             AllowAt = NewTAT - Tau - Increment,
             case Now >= AllowAt of
                 true ->
-                    Remaining = max(0, trunc((Tau + Increment - (NewTAT - Now)) / T)),
-                    {allow, #{remaining => Remaining, reset => max(0, NewTAT - Now)}};
+                    Remaining = seki_number:larger(
+                        0, trunc((Tau + Increment - (NewTAT - Now)) / T)
+                    ),
+                    {allow, #{remaining => Remaining, reset => seki_number:larger(0, NewTAT - Now)}};
                 false ->
                     {deny, #{retry_after => AllowAt - Now}}
             end
@@ -228,12 +230,12 @@ inspect(leaky_bucket, Backend, State, Key, Cost, Now, Config) ->
         not_found ->
             {allow, #{remaining => Limit, reset => 0}};
         {ok, {Level, LastDrain}} ->
-            Elapsed = max(0, Now - LastDrain),
-            Drained = max(0.0, Level - Elapsed * DrainRate),
+            Elapsed = seki_number:larger(0, Now - LastDrain),
+            Drained = seki_number:larger(0.0, Level - Elapsed * DrainRate),
             case Drained + Cost =< Limit of
                 true ->
                     {allow, #{
-                        remaining => max(0, trunc(Limit - Drained - Cost)),
+                        remaining => seki_number:larger(0, trunc(Limit - Drained - Cost)),
                         reset => trunc(Drained / DrainRate)
                     }};
                 false ->

@@ -2,6 +2,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-export([log/2]).
+
 setup() ->
     {ok, _} = application:ensure_all_started(seki),
     ok.
@@ -17,8 +19,52 @@ supervised_bulkhead_test_() ->
         {"shed starts under supervisor", fun shed_supervised/0},
         {"health starts under supervisor", fun health_supervised/0},
         {"delete stops the process", fun delete_stops/0},
-        {"processes restart on crash", fun restart_on_crash/0}
+        {"processes restart on crash", fun restart_on_crash/0},
+        {"starting and stopping is logged under the label of the name",
+            fun starts_and_stops_are_logged/0}
     ]}.
+
+starts_and_stops_are_logged() ->
+    Name = {bulkhead, ~"logged"},
+    Label = seki_name:label(Name),
+    Level = maps:get(level, logger:get_primary_config()),
+    ok = logger:set_primary_config(level, info),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{level => info, config => #{pid => self()}}),
+    try
+        {ok, Pid} = seki:new_bulkhead(Name, #{}),
+        ?assertEqual({error, {already_started, Pid}}, seki:new_bulkhead(Name, #{})),
+        ?assertEqual(ok, seki:delete_bulkhead(Name)),
+        ?assertEqual({error, not_found}, seki:delete_bulkhead(Name)),
+        ?assertEqual(
+            [
+                #{msg => process_started, module => seki_bulkhead, name => Label, pid => Pid},
+                #{
+                    msg => process_start_failed,
+                    module => seki_bulkhead,
+                    name => Label,
+                    reason => {already_started, Pid}
+                },
+                #{msg => process_stopped, name => Label},
+                #{msg => process_stop_failed, name => Label, reason => not_found}
+            ],
+            logged()
+        )
+    after
+        ok = logger:remove_handler(?MODULE),
+        ok = logger:set_primary_config(level, Level)
+    end.
+
+log(#{msg := {report, Report}, meta := #{pid := Pid}}, #{config := #{pid := Pid}}) ->
+    Pid ! {logged, Report},
+    ok;
+log(_Event, _Config) ->
+    ok.
+
+logged() ->
+    receive
+        {logged, Report} -> [Report | logged()]
+    after 0 -> []
+    end.
 
 bulkhead_supervised() ->
     {ok, Pid} = seki:new_bulkhead(test_bh, #{max_concurrent => 5}),

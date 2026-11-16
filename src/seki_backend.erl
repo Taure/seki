@@ -27,9 +27,36 @@ with `allow_non_atomic => true`. Such a limiter checks with `get/2` then
 requests through than the limit allows.
 
 `update/4` must be atomic too, and may call `Fun` more than once.
+
+## Cleanup
+
+Once a minute seki calls `cleanup/2` for every limiter, to delete the state
+of keys that have not been seen for `OlderThan` milliseconds: ten minutes, or
+twice the window of the limiter when that is longer, so a key is never
+forgotten while it still counts against the limit.
+
+The state of a key of a `gcra` limiter is one number, the time the key is free
+again in `erlang:monotonic_time(millisecond)`, and carries no time it was last
+seen. For such a limiter seki also calls the optional `cleanup_arrivals/1`,
+which deletes every key whose time has passed. A backend without it keeps one
+value for every key a `gcra` limiter has ever seen.
+
+## Failures
+
+`init/1` runs in the process that holds every limiter. When it returns
+`{error, Reason}`, raises, or returns anything else, `seki:new_limiter/2`
+returns `{error, {backend_failed, _}}` and no limiter is created. A failure
+in `cleanup/2`, `cleanup_arrivals/1` or `terminate/1` is logged and the other limiters carry on.
+
+Two things a backend can do in `init/1` are not contained. A process it links
+to the caller takes every limiter with it when it dies: supervise such a
+process elsewhere, as `seki_backend_pg` does its gossip process. And an
+`init/1` that does not return holds up every later `seki:new_limiter/2` and
+`seki:delete_limiter/1`, which exit with a timeout after 5 seconds; checks
+against the limiters that exist are not held up.
 """.
 
--callback init(Opts :: map()) -> {ok, State :: term()}.
+-callback init(Opts :: map()) -> {ok, State :: term()} | {error, Reason :: term()}.
 
 -callback get(State :: term(), Key :: term()) -> {ok, Value :: term()} | not_found.
 
@@ -45,6 +72,8 @@ requests through than the limit allows.
 
 -callback cleanup(State :: term(), OlderThan :: integer()) -> ok.
 
+-callback cleanup_arrivals(State :: term()) -> ok.
+
 -callback terminate(State :: term()) -> ok.
 
--optional_callbacks([atomic_update/3]).
+-optional_callbacks([atomic_update/3, cleanup_arrivals/1]).

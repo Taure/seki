@@ -20,14 +20,39 @@ suits most rate limiting use cases.
 
 ## Options
 
-- `scope`: pg scope atom (default: `seki_pg`)
-- `group`: pg group (default: `{seki_limiters, TableName}`, one group per
-  limiter). Limiters that share a group merge each other's keys, so give each
-  limiter its own group.
+- `scope`: pg scope atom (default: `seki_pg`). A scope that is not running is
+  started under seki's supervisor; one that is running, such as a scope your
+  application started, is used as it is.
+- `group`: pg group. A limiter created with `seki:new_limiter/2` defaults to
+  `{seki_limiter, Name}`, its own group; a backend started on its own defaults
+  to `{seki_limiters, TableName}`. Limiters that share a group merge each
+  other's keys, so give each limiter its own group.
 - `gossip_interval`: broadcast interval in ms (default: 1000)
+
+`init/1` returns `{error, {invalid_option, Key}}` when `scope` or
+`table_name` is not an atom, when `scope` is the registered name of something
+that is not a `pg` scope, or when `gossip_interval` is not a whole number of
+milliseconds from 1 to 4294967295.
+
+## The gossip process
+
+The gossip process is supervised by seki and is not linked to the process
+that called `init/1`, which owns the table. A gossip process that dies is
+restarted on the same table: the counters are kept and no limiter is lost. It
+joins its group again when its scope is restarted. It stops when
+`terminate/1` is called or when the owner of the table exits.
+
+A gossip process that dies more than 3 times in 10 seconds is not restarted
+again. Its limiter keeps counting on this node and no longer shares its state
+with the other nodes until it is deleted and created again.
+
+Without the seki application running, the scope is started unsupervised and
+the gossip process is linked to the caller of `init/1`.
 """.
 
 -behaviour(seki_backend).
+
+-include_lib("kernel/include/logger.hrl").
 
 -export([
     init/1,
@@ -37,11 +62,12 @@ suits most rate limiting use cases.
     atomic_update/3,
     delete/2,
     cleanup/2,
+    cleanup_arrivals/1,
     terminate/1
 ]).
 
 -record(state, {
-    local_tab :: ets:tid(),
+    local_tab :: ets:table(),
     gossip_pid :: pid(),
     scope :: atom()
 }).
@@ -51,38 +77,11 @@ suits most rate limiting use cases.
 %%----------------------------------------------------------------------
 
 init(Opts) ->
-    Scope = maps:get(scope, Opts, seki_pg),
-    TableName = maps:get(table_name, Opts, seki_pg_data),
-    Group = maps:get(group, Opts, {seki_limiters, TableName}),
-    %% Ensure pg scope exists
-    ok = ensure_pg_scope(Scope),
-    %% Local ETS for fast reads/writes
-    Tab = ets:new(TableName, [
-        set,
-        public,
-        {write_concurrency, auto}
-    ]),
-    %% Start gossip process
-    GossipInterval = maps:get(gossip_interval, Opts, 1000),
-    Limiter = maps:get(seki_limiter, Opts, #{}),
-    {ok, GossipPid} = seki_pg_gossip:start_link(#{
-        scope => Scope,
-        group => Group,
-        tab => Tab,
-        interval => GossipInterval,
-        algorithm => maps:get(algorithm, Limiter, undefined),
-        window => maps:get(window, Limiter, undefined)
-    }),
-    logger:info(
-        "Distributed backend started (scope=~p, group=~p, gossip_interval=~pms)",
-        [Scope, Group, GossipInterval],
-        #{domain => [seki]}
-    ),
-    {ok, #state{
-        local_tab = Tab,
-        gossip_pid = GossipPid,
-        scope = Scope
-    }}.
+    Kinds = [{scope, atom}, {table_name, atom}, {gossip_interval, interval}],
+    case seki_options:check(Opts, Kinds) of
+        ok -> start(Opts);
+        {error, Reason} -> {error, Reason}
+    end.
 
 get(#state{local_tab = Tab}, Key) ->
     seki_ets:lookup(Tab, Key).
@@ -102,12 +101,12 @@ delete(#state{local_tab = Tab}, Key) ->
 cleanup(#state{local_tab = Tab}, OlderThan) ->
     seki_ets:cleanup(Tab, OlderThan).
 
+cleanup_arrivals(#state{local_tab = Tab}) ->
+    seki_ets:cleanup_arrivals(Tab).
+
 terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
-    logger:info(
-        "Distributed backend shutting down, stopping gossip",
-        #{domain => [seki]}
-    ),
-    seki_pg_gossip:stop(GossipPid),
+    ?LOG_INFO(#{msg => distributed_backend_stopping}, #{domain => [seki]}),
+    ok = seki_gossip_sup:stop_gossip(Tab, GossipPid),
     ets:delete(Tab),
     ok.
 
@@ -115,8 +114,50 @@ terminate(#state{local_tab = Tab, gossip_pid = GossipPid}) ->
 %% Internal
 %%----------------------------------------------------------------------
 
-ensure_pg_scope(Scope) ->
-    case pg:start(Scope) of
-        {ok, _Pid} -> ok;
-        {error, {already_started, _Pid}} -> ok
+start(Opts) ->
+    Scope = maps:get(scope, Opts, seki_pg),
+    case seki_scope_sup:ensure(Scope) of
+        ok -> start(Scope, Opts);
+        {error, not_a_scope} -> {error, {invalid_option, scope}}
+    end.
+
+start(Scope, Opts) ->
+    TableName = maps:get(table_name, Opts, seki_pg_data),
+    Group = maps:get(group, Opts, {seki_limiters, TableName}),
+    Tab = ets:new(TableName, [
+        set,
+        public,
+        {write_concurrency, auto}
+    ]),
+    GossipInterval = maps:get(gossip_interval, Opts, 1000),
+    Limiter = maps:get(seki_limiter, Opts, #{}),
+    Gossip = #{
+        scope => Scope,
+        group => Group,
+        tab => Tab,
+        owner => self(),
+        own_scope => seki_scope_sup:own(Scope),
+        interval => GossipInterval,
+        algorithm => maps:get(algorithm, Limiter, undefined),
+        window => maps:get(window, Limiter, undefined)
+    },
+    case seki_gossip_sup:start_gossip(Tab, Gossip) of
+        {ok, GossipPid} ->
+            ?LOG_INFO(
+                #{
+                    msg => distributed_backend_started,
+                    scope => Scope,
+                    group => seki_name:label(Group),
+                    gossip_interval => GossipInterval
+                },
+                #{domain => [seki]}
+            ),
+            {ok, #state{
+                local_tab = Tab,
+                gossip_pid = GossipPid,
+                scope = Scope
+            }};
+        {error, Reason} ->
+            true = ets:delete(Tab),
+            {error, Reason}
     end.

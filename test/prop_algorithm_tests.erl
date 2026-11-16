@@ -3,6 +3,11 @@
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-define(IS_ALGORITHM(Algorithm),
+    (Algorithm =:= token_bucket orelse Algorithm =:= sliding_window orelse
+        Algorithm =:= gcra orelse Algorithm =:= leaky_bucket)
+).
+
 %%----------------------------------------------------------------------
 %% EUnit wrapper for PropEr
 %%----------------------------------------------------------------------
@@ -125,14 +130,8 @@ prop_token_bucket_respects_burst() ->
         {Limit, Window, NumReqs},
         {limit(), window(), num_requests()},
         begin
-            Name = make_limiter_name(),
             Burst = Limit,
-            ok = seki:new_limiter(Name, #{
-                algorithm => token_bucket,
-                limit => Limit,
-                window => Window,
-                burst => Burst
-            }),
+            Name = bursting_limiter(Limit, Window, Burst),
             Allowed = count_allowed(Name, user1, NumReqs),
             seki:delete_limiter(Name),
             Allowed =< Burst
@@ -145,12 +144,7 @@ prop_sliding_window_respects_limit() ->
         {Limit, Window, NumReqs},
         {limit(), window(), num_requests()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => sliding_window,
-                limit => Limit,
-                window => Window
-            }),
+            Name = limiter(sliding_window, Limit, Window),
             Allowed = count_allowed(Name, user1, NumReqs),
             seki:delete_limiter(Name),
             Allowed =< Limit
@@ -163,12 +157,7 @@ prop_gcra_respects_limit() ->
         {Limit, Window, NumReqs},
         {limit(), window(), num_requests()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => gcra,
-                limit => Limit,
-                window => Window
-            }),
+            Name = limiter(gcra, Limit, Window),
             Allowed = count_allowed(Name, user1, NumReqs),
             seki:delete_limiter(Name),
             Allowed =< Limit
@@ -181,12 +170,7 @@ prop_leaky_bucket_respects_limit() ->
         {Limit, Window, NumReqs},
         {limit(), window(), num_requests()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => leaky_bucket,
-                limit => Limit,
-                window => Window
-            }),
+            Name = limiter(leaky_bucket, Limit, Window),
             Allowed = count_allowed(Name, user1, NumReqs),
             seki:delete_limiter(Name),
             Allowed =< Limit
@@ -199,12 +183,7 @@ prop_allow_remaining_non_negative() ->
         {Algo, Limit, Window},
         {algorithm(), limit(), window()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => Algo,
-                limit => Limit,
-                window => Window
-            }),
+            Name = limiter(Algo, Limit, Window),
             Result = seki:check(Name, user1),
             seki:delete_limiter(Name),
             case Result of
@@ -220,12 +199,7 @@ prop_deny_retry_after_positive() ->
         {Algo, Window},
         {algorithm(), window()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => Algo,
-                limit => 1,
-                window => Window
-            }),
+            Name = limiter(Algo, 1, Window),
             %% First request should be allowed
             {allow, _} = seki:check(Name, user1),
             %% Second should be denied
@@ -244,12 +218,7 @@ prop_inspect_idempotent() ->
         {Algo, Limit, Window},
         {algorithm(), limit(), window()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => Algo,
-                limit => Limit,
-                window => Window
-            }),
+            Name = limiter(Algo, Limit, Window),
             R1 = seki:inspect(Name, user1),
             R2 = seki:inspect(Name, user1),
             R3 = seki:inspect(Name, user1),
@@ -264,12 +233,7 @@ prop_reset_restores_capacity() ->
         {Algo, Window},
         {algorithm(), window()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => Algo,
-                limit => 1,
-                window => Window
-            }),
+            Name = limiter(Algo, 1, Window),
             {allow, _} = seki:check(Name, user1),
             seki:reset(Name, user1),
             Result = seki:check(Name, user1),
@@ -287,12 +251,7 @@ prop_keys_independent() ->
         {Algo, Window},
         {algorithm(), window()},
         begin
-            Name = make_limiter_name(),
-            ok = seki:new_limiter(Name, #{
-                algorithm => Algo,
-                limit => 1,
-                window => Window
-            }),
+            Name = limiter(Algo, 1, Window),
             {allow, _} = seki:check(Name, key1),
             {deny, _} = seki:check(Name, key1),
             %% Different key should still be allowed
@@ -323,7 +282,7 @@ prop_codel_drops_on_sustained_latency() ->
                 interval => Interval,
                 max_in_flight => 10000
             }),
-            HighLatency = Target + 50,
+            HighLatency = high_latency(Target),
             %% Complete with high latency, sleeping to let wall time exceed interval
             lists:foreach(
                 fun(_) ->
@@ -359,11 +318,12 @@ prop_codel_recovers() ->
                 interval => Interval,
                 max_in_flight => 10000
             }),
+            HighLatency = high_latency(Target),
             %% Push into dropping mode
             lists:foreach(
                 fun(_) ->
                     seki_shed:admit(Name),
-                    seki_shed:complete(Name, Target + 50)
+                    seki_shed:complete(Name, HighLatency)
                 end,
                 lists:seq(1, 5)
             ),
@@ -371,7 +331,7 @@ prop_codel_recovers() ->
             lists:foreach(
                 fun(_) ->
                     seki_shed:admit(Name),
-                    seki_shed:complete(Name, Target + 50)
+                    seki_shed:complete(Name, HighLatency)
                 end,
                 lists:seq(1, 10)
             ),
@@ -394,16 +354,35 @@ prop_codel_recovers() ->
 %%----------------------------------------------------------------------
 
 count_allowed(Name, Key, N) ->
-    lists:foldl(
-        fun(_, Acc) ->
-            case seki:check(Name, Key) of
-                {allow, _} -> Acc + 1;
-                {deny, _} -> Acc
-            end
-        end,
-        0,
-        lists:seq(1, N)
-    ).
+    length([Key || _ <:- lists:seq(1, N), allowed(Name, Key)]).
+
+allowed(Name, Key) ->
+    case seki:check(Name, Key) of
+        {allow, _} -> true;
+        {deny, _} -> false
+    end.
+
+-spec limiter(term(), term(), term()) -> atom().
+limiter(Algorithm, Limit, Window) when
+    ?IS_ALGORITHM(Algorithm), is_integer(Limit), is_integer(Window)
+->
+    started(#{algorithm => Algorithm, limit => Limit, window => Window}).
+
+-spec bursting_limiter(term(), term(), term()) -> atom().
+bursting_limiter(Limit, Window, Burst) when
+    is_integer(Limit), is_integer(Window), is_integer(Burst)
+->
+    started(#{algorithm => token_bucket, limit => Limit, window => Window, burst => Burst}).
+
+-spec started(seki:limiter_opts()) -> atom().
+started(Opts) ->
+    Name = make_limiter_name(),
+    ok = seki:new_limiter(Name, Opts),
+    Name.
+
+-spec high_latency(term()) -> integer().
+high_latency(Target) when is_integer(Target) ->
+    Target + 50.
 
 make_limiter_name() ->
     list_to_atom("prop_limiter_" ++ integer_to_list(erlang:unique_integer([positive]))).

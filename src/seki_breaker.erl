@@ -7,14 +7,23 @@ Tracks failure and slow-call rates in a sliding window. When thresholds are
 exceeded, the breaker opens and rejects calls with `{error, circuit_open}`.
 After a wait period, it transitions to half-open and allows probe requests.
 
+A breaker that is restarted while open, or created again under a name that
+was open and has not been deleted, starts open and waits out what was left
+of `wait_duration`: it does not come back closed. `seki:delete_breaker/1`
+and `seki:reset_breaker/1` forget that the name was open. A breaker that is
+restarted while closed starts with an empty window.
+
 Typically used via `seki:call/2` rather than directly.
 """.
 
 -behaviour(gen_statem).
 
+-include_lib("kernel/include/logger.hrl").
+
 %% API
 -export([
     start_link/2,
+    check_options/1,
     call/3,
     get_state/1,
     reset/1
@@ -30,8 +39,20 @@ Typically used via `seki:call/2` rather than directly.
     terminate/3
 ]).
 
+-define(MINIMUM_SAMPLE, 5).
+-define(OPTIONS, [
+    {window_type, {one_of, [count, time]}},
+    {window_size, pos_integer},
+    {failure_threshold, percent},
+    {slow_call_threshold, percent},
+    {slow_call_duration, pos_integer},
+    {wait_duration, pos_integer},
+    {half_open_requests, pos_integer},
+    {error_classifier, {function, 1}}
+]).
+
 -record(data, {
-    name :: atom(),
+    name :: seki:name(),
     %% Sliding window for failure tracking
     window_type :: count | time,
     window_size :: pos_integer(),
@@ -40,7 +61,7 @@ Typically used via `seki:call/2` rather than directly.
     slow_call_duration :: pos_integer(),
     wait_duration :: pos_integer(),
     half_open_requests :: pos_integer(),
-    error_classifier :: fun((term()) -> boolean()),
+    error_classifier :: fun((term()) -> term()),
     %% State tracking
     outcomes :: queue:queue({ok | error | slow, integer()}),
     outcome_count :: non_neg_integer(),
@@ -53,22 +74,37 @@ Typically used via `seki:call/2` rather than directly.
 
 -doc false.
 start_link(Name, Opts) ->
-    gen_statem:start_link({local, Name}, ?MODULE, {Name, Opts}, []).
+    case check_options(Opts) of
+        ok -> gen_statem:start_link(seki_registry:registration(Name), ?MODULE, {Name, Opts}, []);
+        {error, Reason} -> {error, Reason}
+    end.
+
+-doc false.
+-spec check_options(term()) -> ok | {error, seki_options:invalid()}.
+check_options(Opts) ->
+    seki_options:check(Opts, ?OPTIONS).
 
 -doc "Execute a function through this breaker. Returns `{error, circuit_open}` when open.".
--spec call(atom(), fun(() -> term()), map()) -> seki:call_result().
+-spec call(seki:name(), fun(() -> term()), map()) -> seki:call_result().
 call(Name, Fun, _CallOpts) ->
-    gen_statem:call(Name, {call, Fun}).
+    case gen_statem:call(seki_registry:server(Name), {call, Fun}) of
+        {ok, _Result} = Ok -> Ok;
+        {error, _Reason} = Error -> Error
+    end.
 
 -doc "Get the current breaker state.".
--spec get_state(atom()) -> closed | open | half_open.
+-spec get_state(seki:name()) -> closed | open | half_open.
 get_state(Name) ->
-    gen_statem:call(Name, get_state).
+    case gen_statem:call(seki_registry:server(Name), get_state) of
+        closed -> closed;
+        open -> open;
+        half_open -> half_open
+    end.
 
 -doc "Reset the breaker to closed state.".
--spec reset(atom()) -> ok.
+-spec reset(seki:name()) -> ok.
 reset(Name) ->
-    gen_statem:cast(Name, reset).
+    gen_statem:cast(seki_registry:server(Name), reset).
 
 %%----------------------------------------------------------------------
 %% gen_statem callbacks
@@ -97,8 +133,19 @@ init({Name, Opts}) ->
         outcome_count = 0,
         half_open_count = 0
     },
-    emit_state_change(Name, undefined, closed),
-    {ok, closed, Data}.
+    case seki_breaker_trips:probe_at(Name) of
+        closed ->
+            emit_state_change(Name, undefined, closed),
+            {ok, closed, Data};
+        ProbeAt ->
+            ?LOG_NOTICE(
+                #{msg => breaker_started_open, name => seki_name:label(Name)},
+                #{domain => [seki]}
+            ),
+            emit_state_change(Name, undefined, open),
+            Wait = max(0, ProbeAt - erlang:monotonic_time(millisecond)),
+            {ok, open, Data, [{state_timeout, Wait, try_half_open}]}
+    end.
 
 %%----------------------------------------------------------------------
 %% CLOSED state
@@ -110,59 +157,32 @@ closed({call, From}, {call, Fun}, Data) ->
     try Fun() of
         Result ->
             Duration = erlang:monotonic_time(millisecond) - Start,
-            Outcome =
-                case Classifier(Result) of
-                    true -> error;
-                    false when Duration >= SlowDuration -> slow;
-                    false -> ok
-                end,
+            Outcome = outcome(Name, Classifier, Result, Duration, SlowDuration),
             emit_call_telemetry(Name, closed, Outcome, Duration),
-            NewData = record_outcome(Outcome, Data),
-            case should_trip(NewData) of
-                true ->
-                    logger:warning(
-                        "Circuit breaker ~p tripped: closed -> open",
-                        [Name],
-                        #{domain => [seki]}
-                    ),
-                    emit_state_change(Name, closed, open),
-                    {next_state, open, reset_outcomes(NewData), [
-                        {reply, From, wrap_result(Result)},
-                        {state_timeout, NewData#data.wait_duration, try_half_open}
-                    ]};
-                false ->
-                    {keep_state, NewData, [{reply, From, wrap_result(Result)}]}
-            end
+            recorded(record_outcome(Outcome, Data), {reply, From, wrap_result(Result)})
     catch
         Class:Reason:Stacktrace ->
             Duration = erlang:monotonic_time(millisecond) - Start,
-            logger:error(
-                "Circuit breaker ~p call exception: ~p:~p",
-                [Name, Class, Reason],
+            ?LOG_ERROR(
+                #{
+                    msg => breaker_call_raised,
+                    name => seki_name:label(Name),
+                    class => Class,
+                    reason => Reason
+                },
                 #{domain => [seki]}
             ),
             emit_call_telemetry(Name, closed, error, Duration),
-            NewData = record_outcome(error, Data),
-            case should_trip(NewData) of
-                true ->
-                    logger:warning(
-                        "Circuit breaker ~p tripped: closed -> open",
-                        [Name],
-                        #{domain => [seki]}
-                    ),
-                    emit_state_change(Name, closed, open),
-                    {next_state, open, reset_outcomes(NewData), [
-                        {reply, From, {error, {Class, Reason, Stacktrace}}},
-                        {state_timeout, NewData#data.wait_duration, try_half_open}
-                    ]};
-                false ->
-                    {keep_state, NewData, [{reply, From, {error, {Class, Reason, Stacktrace}}}]}
-            end
+            recorded(
+                record_outcome(error, Data), {reply, From, {error, {Class, Reason, Stacktrace}}}
+            )
     end;
 closed({call, From}, get_state, _Data) ->
     {keep_state_and_data, [{reply, From, closed}]};
 closed(cast, reset, Data) ->
-    {keep_state, reset_outcomes(Data)}.
+    {keep_state, reset_outcomes(Data)};
+closed(EventType, Event, _Data) ->
+    unexpected(EventType, Event).
 
 %%----------------------------------------------------------------------
 %% OPEN state
@@ -174,16 +194,16 @@ open({call, From}, {call, _Fun}, #data{name = Name}) ->
 open({call, From}, get_state, _Data) ->
     {keep_state_and_data, [{reply, From, open}]};
 open(cast, reset, Data) ->
-    emit_state_change(Data#data.name, open, closed),
-    {next_state, closed, reset_outcomes(Data)};
+    {next_state, closed, closed_again(open, Data)};
 open(state_timeout, try_half_open, Data) ->
-    logger:notice(
-        "Circuit breaker ~p: open -> half_open, probing",
-        [Data#data.name],
+    ?LOG_NOTICE(
+        #{msg => breaker_probing, name => seki_name:label(Data#data.name)},
         #{domain => [seki]}
     ),
     emit_state_change(Data#data.name, open, half_open),
-    {next_state, half_open, Data#data{half_open_count = 0}}.
+    {next_state, half_open, Data#data{half_open_count = 0}};
+open(EventType, Event, _Data) ->
+    unexpected(EventType, Event).
 
 %%----------------------------------------------------------------------
 %% HALF_OPEN state
@@ -195,8 +215,7 @@ half_open({call, From}, {call, Fun}, Data) ->
         half_open_requests = MaxRequests,
         half_open_count = Count,
         slow_call_duration = SlowDuration,
-        error_classifier = Classifier,
-        wait_duration = WaitDuration
+        error_classifier = Classifier
     } = Data,
     case Count >= MaxRequests of
         true ->
@@ -209,70 +228,132 @@ half_open({call, From}, {call, Fun}, Data) ->
             try Fun() of
                 Result ->
                     Duration = erlang:monotonic_time(millisecond) - Start,
-                    Outcome =
-                        case Classifier(Result) of
-                            true -> error;
-                            false when Duration >= SlowDuration -> slow;
-                            false -> ok
-                        end,
+                    Outcome = outcome(Name, Classifier, Result, Duration, SlowDuration),
                     emit_call_telemetry(Name, half_open, Outcome, Duration),
                     NewData2 = record_outcome(Outcome, NewData),
                     case Outcome of
                         ok ->
                             case NewData2#data.half_open_count >= MaxRequests of
                                 true ->
-                                    logger:notice(
-                                        "Circuit breaker ~p recovered: half_open -> closed",
-                                        [Name],
+                                    ?LOG_NOTICE(
+                                        #{msg => breaker_recovered, name => seki_name:label(Name)},
                                         #{domain => [seki]}
                                     ),
-                                    emit_state_change(Name, half_open, closed),
-                                    {next_state, closed, reset_outcomes(NewData2), [
+                                    {next_state, closed, closed_again(half_open, NewData2), [
                                         {reply, From, wrap_result(Result)}
                                     ]};
                                 false ->
                                     {keep_state, NewData2, [{reply, From, wrap_result(Result)}]}
                             end;
                         _ ->
-                            logger:warning(
-                                "Circuit breaker ~p probe failed (~p), reopening",
-                                [Name, Outcome],
+                            ?LOG_WARNING(
+                                #{
+                                    msg => breaker_probe_failed,
+                                    name => seki_name:label(Name),
+                                    outcome => Outcome
+                                },
                                 #{domain => [seki]}
                             ),
-                            emit_state_change(Name, half_open, open),
-                            {next_state, open, reset_outcomes(NewData2), [
-                                {reply, From, wrap_result(Result)},
-                                {state_timeout, WaitDuration, try_half_open}
-                            ]}
+                            opened(half_open, NewData2, {reply, From, wrap_result(Result)})
                     end
             catch
                 Class:Reason:Stacktrace ->
                     Duration = erlang:monotonic_time(millisecond) - Start,
-                    logger:warning(
-                        "Circuit breaker ~p probe exception: ~p:~p, reopening",
-                        [Name, Class, Reason],
+                    ?LOG_WARNING(
+                        #{
+                            msg => breaker_probe_raised,
+                            name => seki_name:label(Name),
+                            class => Class,
+                            reason => Reason
+                        },
                         #{domain => [seki]}
                     ),
                     emit_call_telemetry(Name, half_open, error, Duration),
-                    emit_state_change(Name, half_open, open),
-                    {next_state, open, reset_outcomes(NewData), [
-                        {reply, From, {error, {Class, Reason, Stacktrace}}},
-                        {state_timeout, WaitDuration, try_half_open}
-                    ]}
+                    opened(half_open, NewData, {reply, From, {error, {Class, Reason, Stacktrace}}})
             end
     end;
 half_open({call, From}, get_state, _Data) ->
     {keep_state_and_data, [{reply, From, half_open}]};
 half_open(cast, reset, Data) ->
-    emit_state_change(Data#data.name, half_open, closed),
-    {next_state, closed, reset_outcomes(Data)}.
+    {next_state, closed, closed_again(half_open, Data)};
+half_open(EventType, Event, _Data) ->
+    unexpected(EventType, Event).
 
 terminate(_Reason, _State, _Data) ->
     ok.
 
+recorded(#data{name = Name} = Data, Reply) ->
+    case should_trip(Data) of
+        true ->
+            ?LOG_WARNING(
+                #{msg => breaker_tripped, name => seki_name:label(Name)},
+                #{domain => [seki]}
+            ),
+            opened(closed, Data, Reply);
+        false ->
+            {keep_state, Data, [Reply]}
+    end.
+
+%% The time of the next probe is kept outside the process, where a breaker
+%% started under this name finds it: see `seki_breaker_trips`.
+opened(Former, #data{name = Name, wait_duration = WaitDuration} = Data, Reply) ->
+    ok = seki_breaker_trips:opened(Name, erlang:monotonic_time(millisecond) + WaitDuration),
+    emit_state_change(Name, Former, open),
+    {next_state, open, reset_outcomes(Data), [Reply, {state_timeout, WaitDuration, try_half_open}]}.
+
+closed_again(Former, #data{name = Name} = Data) ->
+    ok = seki_breaker_trips:closed(Name),
+    emit_state_change(Name, Former, closed),
+    reset_outcomes(Data).
+
+unexpected({call, From}, Request) ->
+    ok = seki_unexpected:dropped(?MODULE, call, Request),
+    {keep_state_and_data, [{reply, From, {error, unknown_request}}]};
+unexpected(cast, Message) ->
+    ok = seki_unexpected:dropped(?MODULE, cast, Message),
+    keep_state_and_data;
+unexpected(_InfoOrTimeout, Message) ->
+    ok = seki_unexpected:dropped(?MODULE, info, Message),
+    keep_state_and_data.
+
 %%----------------------------------------------------------------------
 %% Internal - Outcome tracking
 %%----------------------------------------------------------------------
+
+outcome(Name, Classifier, Result, Duration, SlowDuration) ->
+    case is_error(Name, Classifier, Result) of
+        true -> error;
+        false when Duration >= SlowDuration -> slow;
+        false -> ok
+    end.
+
+%% A classifier that raises, or returns anything but a boolean, cannot say the
+%% call succeeded, and the breaker must outlive it: the result is an error.
+is_error(Name, Classifier, Result) ->
+    try Classifier(Result) of
+        false ->
+            false;
+        true ->
+            true;
+        _NotBoolean ->
+            ?LOG_WARNING(
+                #{msg => error_classifier_returned_no_boolean, name => seki_name:label(Name)},
+                #{domain => [seki]}
+            ),
+            true
+    catch
+        Class:Reason ->
+            ?LOG_WARNING(
+                #{
+                    msg => error_classifier_raised,
+                    name => seki_name:label(Name),
+                    class => Class,
+                    reason => Reason
+                },
+                #{domain => [seki]}
+            ),
+            true
+    end.
 
 record_outcome(Outcome, #data{window_type = count, window_size = Size} = Data) ->
     #data{outcomes = Q, outcome_count = Count} = Data,
@@ -293,10 +374,15 @@ record_outcome(Outcome, #data{window_type = time, window_size = WindowMs} = Data
     {Q3, Removed} = prune_old(Q2, Cutoff, 0),
     Data#data{outcomes = Q3, outcome_count = Count + 1 - Removed}.
 
-should_trip(#data{outcome_count = Count}) when Count < 5 ->
-    %% Minimum sample size
-    false;
-should_trip(Data) ->
+should_trip(#data{outcome_count = Count} = Data) ->
+    Count >= minimum_sample(Data) andalso over_threshold(Data).
+
+%% A count window smaller than the usual minimum is full before it reaches
+%% it, and would never trip.
+minimum_sample(#data{window_type = count, window_size = Size}) -> min(?MINIMUM_SAMPLE, Size);
+minimum_sample(#data{window_type = time}) -> ?MINIMUM_SAMPLE.
+
+over_threshold(Data) ->
     #data{
         failure_threshold = FailThreshold,
         slow_call_threshold = SlowThreshold,

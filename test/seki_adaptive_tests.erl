@@ -12,6 +12,10 @@ cleanup(_) ->
 
 aimd_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
+        {"only a process acquires a slot", fun only_a_process_acquires/0},
+        {"an unknown outcome lowers the gradient limit", fun unknown_outcome_lowers_limit/0},
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
         {"starts with initial limit", fun aimd_initial/0},
         {"allows calls within limit", fun aimd_allows/0},
         {"rejects when limit reached", fun aimd_rejects/0},
@@ -359,3 +363,71 @@ gradient_high_tolerance() ->
     %% With high tolerance, limit should increase
     ?assert(Limit >= 10),
     gen_server:stop(gr_tol).
+
+unexpected_messages_are_dropped() ->
+    {ok, Pid} = seki_adaptive:start_link(ad_stray, #{}),
+    ?assertEqual(ok, seki_unexpected_tests:dropped_by(Pid, seki_adaptive, {error, unknown})).
+
+invalid_options_are_refused() ->
+    Supervisor = whereis(seki_process_sup),
+    [
+        begin
+            ?assertEqual(
+                {error, {invalid_option, Key}}, seki:new_adaptive(ad_invalid, option(Key, Value))
+            ),
+            ?assertEqual(
+                {error, {invalid_option, Key}},
+                seki_adaptive:start_link(ad_invalid, option(Key, Value))
+            )
+        end
+     || {Key, Value} <:- [
+            {algorithm, bogus},
+            {min_limit, 0},
+            {max_limit, unlimited},
+            {initial_limit, 1.5},
+            {backoff_ratio, 0},
+            {backoff_ratio, half},
+            {smoothing, -0.2},
+            {tolerance, loose},
+            {long_smoothing, 0}
+        ]
+    ],
+    ?assertEqual({error, invalid_options}, seki_adaptive:check_options([])),
+    ?assertEqual(undefined, whereis(ad_invalid)),
+    ?assertEqual(Supervisor, whereis(seki_process_sup)),
+    {ok, _} = seki:new_adaptive(ad_invalid, #{
+        algorithm => gradient,
+        min_limit => 1,
+        max_limit => 1,
+        initial_limit => 1,
+        backoff_ratio => 1,
+        smoothing => 0.5,
+        tolerance => 2,
+        long_smoothing => 0.05,
+        some_other_key => kept
+    }),
+    ?assertEqual({ok, done}, seki_adaptive:call(ad_invalid, fun() -> done end)),
+    seki:delete_adaptive(ad_invalid).
+
+only_a_process_acquires() ->
+    {ok, Pid} = seki_adaptive:start_link(ad_not_a_pid, #{initial_limit => 1}),
+    [
+        ?assertEqual({error, unknown}, gen_server:call(Pid, {acquire, Holder}))
+     || Holder <:- [not_a_pid, 7, ~"pid", {a, pid}]
+    ],
+    ?assert(is_process_alive(Pid)),
+    ?assertMatch(#{in_flight := 0}, seki_adaptive:status(ad_not_a_pid)),
+    ?assertEqual(ok, seki_adaptive:acquire(ad_not_a_pid)).
+
+unknown_outcome_lowers_limit() ->
+    {ok, Pid} = seki_adaptive:start_link(ad_outcome, #{
+        algorithm => gradient, initial_limit => 20, min_limit => 1
+    }),
+    ok = seki_adaptive:acquire(ad_outcome),
+    ok = gen_server:cast(Pid, {release, self(), not_an_outcome}),
+    ?assertMatch(#{current_limit := 18, in_flight := 0}, seki_adaptive:status(ad_outcome)),
+    ?assert(is_process_alive(Pid)).
+
+-spec option(atom(), term()) -> map().
+option(Key, Value) ->
+    #{Key => Value}.

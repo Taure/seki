@@ -16,6 +16,34 @@ and a combined `execute/3` that checks rate limits before calling through a brea
 
     :seki.new_limiter(:my_api, %{algorithm: :sliding_window, limit: 100, window: 60_000})
     :seki.check(:my_api, user_id)
+
+## Names
+
+A limiter, breaker, bulkhead, load shedder, adaptive limiter or health checker
+is named by any term (`t:name/0`). An atom is the usual name. Use another term
+when there is one per tenant, worker or host, so that no atom is created for
+each:
+
+    seki:new_breaker({payments, TenantId}, #{}).
+    seki:call({payments, TenantId}, fun() -> charge(TenantId) end).
+
+A process named by an atom is registered under it, as `whereis/1` shows. One
+named by any other term is found through seki only.
+
+A tuple is always a name on this node. `{Name, Node}` is not read as the
+process `Name` on `Node`: to use a breaker on another node, call that node.
+
+A pid is not a name: `new_breaker/2` and the other `new_*` functions return
+`{error, {invalid_name, Pid}}` for one. The pid they return is accepted in
+place of the name by every function that calls the process.
+
+## Options
+
+`new_limiter/2`, `new_breaker/2` and the other `new_*` functions check their
+options before they start anything. An option of the wrong kind, such as
+`window_size => 0`, returns `{error, {invalid_option, window_size}}`, and
+options that are not a map return `{error, invalid_options}`. A key that seki
+does not know is ignored.
 """.
 
 %% Rate limiter API
@@ -60,8 +88,13 @@ and a combined `execute/3` that checks rate limits before calling through a brea
 %% Types
 %%----------------------------------------------------------------------
 
--type limiter_name() :: atom().
--type breaker_name() :: atom().
+-doc """
+The name of a limiter, breaker, bulkhead, load shedder, adaptive limiter or
+health checker: any term but a pid.
+""".
+-type name() :: term().
+-type limiter_name() :: name().
+-type breaker_name() :: name().
 -type key() :: term().
 
 -type algorithm() :: token_bucket | sliding_window | gcra | leaky_bucket.
@@ -97,6 +130,7 @@ and a combined `execute/3` that checks rate limits before calling through a brea
     | {error, term()}.
 
 -export_type([
+    name/0,
     limiter_name/0,
     breaker_name/0,
     key/0,
@@ -119,6 +153,12 @@ Returns `{error, already_registered}` if the name is taken, and
 `atomic_update/3`. Such a backend checks with `get/2` then `put/3`, so
 concurrent checks of one key can exceed the limit; pass
 `allow_non_atomic => true` to use it anyway.
+
+The options are checked first: one of the wrong kind returns
+`{error, {invalid_option, Key}}`, and a missing `algorithm`, `limit` or
+`window` returns `{error, {missing_option, Key}}`. A backend that cannot
+start returns `{error, {backend_failed, Reason}}`. In each case no limiter is
+created and the other limiters are not affected.
 """.
 -spec new_limiter(limiter_name(), limiter_opts()) -> ok | {error, term()}.
 new_limiter(Name, Opts) ->
@@ -129,7 +169,11 @@ new_limiter(Name, Opts) ->
 check(Name, Key) ->
     check(Name, Key, 1).
 
--doc "Check if a request with a custom cost is allowed for the given key.".
+-doc """
+Check if a request with a custom cost is allowed for the given key.
+
+Raises `{limiter_not_found, Name}` if no limiter has this name.
+""".
 -spec check(limiter_name(), key(), pos_integer()) -> check_result().
 check(Name, Key, Cost) ->
     {Algorithm, Backend, BackendState, Config} = seki_limiter_registry:lookup(Name),
@@ -175,7 +219,11 @@ new_breaker(Name, Opts) ->
 call(Name, Fun) ->
     call(Name, Fun, #{}).
 
--doc "Execute a function through a circuit breaker with options.".
+-doc """
+Execute a function through a circuit breaker with options.
+
+Exits with `{noproc, _}` if no breaker has this name. `Fun` is not run.
+""".
 -spec call(breaker_name(), fun(() -> term()), map()) -> call_result().
 call(Name, Fun, CallOpts) ->
     seki_breaker:call(Name, Fun, CallOpts).
@@ -200,42 +248,42 @@ delete_breaker(Name) ->
 %%----------------------------------------------------------------------
 
 -doc "Start a supervised bulkhead.".
--spec new_bulkhead(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_bulkhead(name(), map()) -> {ok, pid()} | {error, term()}.
 new_bulkhead(Name, Opts) ->
     seki_process_sup:start_child(seki_bulkhead, Name, Opts).
 
 -doc "Stop and remove a supervised bulkhead.".
--spec delete_bulkhead(atom()) -> ok | {error, term()}.
+-spec delete_bulkhead(name()) -> ok | {error, term()}.
 delete_bulkhead(Name) ->
     seki_process_sup:stop_child(Name).
 
 -doc "Start a supervised adaptive concurrency limiter.".
--spec new_adaptive(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_adaptive(name(), map()) -> {ok, pid()} | {error, term()}.
 new_adaptive(Name, Opts) ->
     seki_process_sup:start_child(seki_adaptive, Name, Opts).
 
 -doc "Stop and remove a supervised adaptive concurrency limiter.".
--spec delete_adaptive(atom()) -> ok | {error, term()}.
+-spec delete_adaptive(name()) -> ok | {error, term()}.
 delete_adaptive(Name) ->
     seki_process_sup:stop_child(Name).
 
 -doc "Start a supervised load shedder.".
--spec new_shed(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_shed(name(), map()) -> {ok, pid()} | {error, term()}.
 new_shed(Name, Opts) ->
     seki_process_sup:start_child(seki_shed, Name, Opts).
 
 -doc "Stop and remove a supervised load shedder.".
--spec delete_shed(atom()) -> ok | {error, term()}.
+-spec delete_shed(name()) -> ok | {error, term()}.
 delete_shed(Name) ->
     seki_process_sup:stop_child(Name).
 
 -doc "Start a supervised health checker.".
--spec new_health(atom(), map()) -> {ok, pid()} | {error, term()}.
+-spec new_health(name(), map()) -> {ok, pid()} | {error, term()}.
 new_health(Name, Opts) ->
     seki_process_sup:start_child(seki_health, Name, Opts).
 
 -doc "Stop and remove a supervised health checker.".
--spec delete_health(atom()) -> ok | {error, term()}.
+-spec delete_health(name()) -> ok | {error, term()}.
 delete_health(Name) ->
     seki_process_sup:stop_child(Name).
 
@@ -243,7 +291,12 @@ delete_health(Name) ->
 %% Combined API
 %%----------------------------------------------------------------------
 
--doc "Check rate limit then execute through circuit breaker. Returns `{error, {rate_limited, Info}}` if denied.".
+-doc """
+Check rate limit then execute through circuit breaker. Returns `{error, {rate_limited, Info}}` if denied.
+
+Raises as `check/3` and `call/3` do for a limiter or breaker that does not
+exist. `Fun` is not run.
+""".
 -spec execute(breaker_name(), limiter_name(), fun(() -> term())) ->
     call_result() | {error, rate_limited}.
 execute(Breaker, Limiter, Fun) ->

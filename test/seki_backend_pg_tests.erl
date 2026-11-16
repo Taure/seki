@@ -2,6 +2,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+-export([log/2]).
+
 setup() ->
     {ok, _} = application:ensure_all_started(seki),
     ok.
@@ -15,6 +17,13 @@ pg_backend_test_() ->
         {"basic get/put", fun basic_get_put/0},
         {"update with default", fun update_default/0},
         {"delete key", fun delete_key/0},
+        {"cleanup removes what is older than asked", fun cleanup_removes_what_is_old/0},
+        {"terminate stops the gossip and deletes the table", fun terminate_leaves_nothing/0},
+        {"a backend that starts is logged with its defaults", fun a_start_is_logged/0},
+        {"a backend whose gossip cannot start leaves no table",
+            fun a_start_without_gossip_leaves_no_table/0},
+        {"the first call or cast a gossip process drops is logged",
+            fun first_call_or_cast_dropped_is_logged/0},
         {"rate limiting through pg backend", fun rate_limit_through_pg/0},
         {"gossip merge - sliding window same window", fun merge_sliding_same/0},
         {"gossip merge - sliding window newer window", fun merge_sliding_newer/0},
@@ -45,6 +54,130 @@ delete_key() ->
     ?assertEqual(not_found, seki_backend_pg:get(State, key1)),
     seki_backend_pg:terminate(State).
 
+cleanup_removes_what_is_old() ->
+    {ok, State} = seki_backend_pg:init(#{table_name => pg_test_5, gossip_interval => 60000}),
+    Now = erlang:monotonic_time(millisecond),
+    ok = seki_backend_pg:put(State, old_window, {3, Now - 10000}),
+    ok = seki_backend_pg:put(State, old_bucket, {3, 1, Now - 10000}),
+    ok = seki_backend_pg:put(State, recent, {3, Now}),
+    ?assertEqual(ok, seki_backend_pg:cleanup(State, 5000)),
+    ?assertEqual(not_found, seki_backend_pg:get(State, old_window)),
+    ?assertEqual(not_found, seki_backend_pg:get(State, old_bucket)),
+    ?assertEqual({ok, {3, Now}}, seki_backend_pg:get(State, recent)),
+    seki_backend_pg:terminate(State).
+
+terminate_leaves_nothing() ->
+    {ok, State} = seki_backend_pg:init(#{table_name => pg_test_6, gossip_interval => 60000}),
+    Tab = element(2, State),
+    Gossip = gossip_pid(State),
+    ?assertEqual(self(), ets:info(Tab, owner)),
+    ?assert(is_process_alive(Gossip)),
+    ?assertEqual(ok, seki_backend_pg:terminate(State)),
+    ?assertEqual(undefined, ets:info(Tab, owner)),
+    ?assertNot(is_process_alive(Gossip)).
+
+a_start_is_logged() ->
+    Group = {seki_limiters, pg_test_7},
+    Level = maps:get(level, logger:get_primary_config()),
+    ok = logger:set_primary_config(level, info),
+    ok = logger:add_handler(?MODULE, ?MODULE, #{level => info, config => #{pid => self()}}),
+    {ok, State} =
+        try
+            seki_backend_pg:init(#{table_name => pg_test_7})
+        after
+            ok = logger:remove_handler(?MODULE),
+            ok = logger:set_primary_config(level, Level)
+        end,
+    ?assertEqual(
+        [
+            #{
+                msg => gossip_joined,
+                scope => seki_pg,
+                group => seki_name:label(Group),
+                interval => 1000
+            },
+            #{
+                msg => distributed_backend_started,
+                scope => seki_pg,
+                group => seki_name:label(Group),
+                gossip_interval => 1000
+            }
+        ],
+        logged()
+    ),
+    seki_backend_pg:terminate(State).
+
+log(#{msg := {report, #{msg := Message} = Report}}, #{config := #{pid := Pid}}) when
+    Message =:= gossip_joined; Message =:= distributed_backend_started
+->
+    Pid ! {logged, Report},
+    ok;
+log(_Event, _Config) ->
+    ok.
+
+logged() ->
+    receive
+        {logged, Report} -> [Report | logged()]
+    after 0 -> []
+    end.
+
+%% The scope is held still with the gossip process waiting to join it, and
+%% is then killed, so the gossip process finds no scope and does not start.
+a_start_without_gossip_leaves_no_table() ->
+    Scope = seki_backend_pg_tests_scope,
+    ok = seki_scope_sup:ensure(Scope),
+    Running = live(whereis(Scope)),
+    ok = sys:suspend(Scope),
+    Self = self(),
+    Starter = spawn_link(fun() ->
+        Self !
+            {started, self(),
+                seki_backend_pg:init(#{
+                    scope => Scope, table_name => pg_test_8, gossip_interval => 60000
+                })}
+    end),
+    ok = joining(Running),
+    exit(Running, kill),
+    Started =
+        receive
+            {started, Starter, Result} -> Result
+        end,
+    ?assertMatch({error, {{no_scope, Scope}, _Child}}, Started),
+    ?assertEqual([], [Tab || Tab <:- ets:all(), ets:info(Tab, name) =:= pg_test_8]),
+    ?assertEqual([], supervisor:which_children(seki_gossip_sup)).
+
+-spec live(term()) -> pid().
+live(Process) when is_pid(Process) -> Process.
+
+joining(Scope) ->
+    case process_info(Scope, message_queue_len) of
+        {message_queue_len, 0} ->
+            erlang:yield(),
+            joining(Scope);
+        {message_queue_len, _Waiting} ->
+            ok
+    end.
+
+first_call_or_cast_dropped_is_logged() ->
+    [
+        begin
+            {Gossip, _State} = gossip_limiter(Name),
+            ?assertEqual(
+                [
+                    #{
+                        msg => unexpected_message_dropped,
+                        module => seki_pg_gossip,
+                        kind => Kind,
+                        message => stray
+                    }
+                ],
+                seki_unexpected_tests:first_dropped(Gossip, Kind)
+            ),
+            seki:delete_limiter(Name)
+        end
+     || {Kind, Name} <:- [{call, pg_first_call}, {cast, pg_first_cast}]
+    ].
+
 rate_limit_through_pg() ->
     ok = seki:new_limiter(pg_limiter, #{
         algorithm => sliding_window,
@@ -65,6 +198,9 @@ rate_limit_through_pg() ->
 gossip_test_() ->
     {setup, fun setup/0, fun cleanup/1, [
         {"gossip start and stop", fun gossip_start_stop/0},
+        {"unexpected messages are dropped", fun unexpected_messages_are_dropped/0},
+        {"malformed gossip is dropped", fun malformed_gossip_is_dropped/0},
+        {"options of the wrong kind are refused", fun invalid_options_are_refused/0},
         {"gossip receives merge cast", fun gossip_merge_cast/0},
         {"gossip broadcasts to peers", fun gossip_broadcast/0}
     ]}.
@@ -362,7 +498,7 @@ other_algorithm_is_ignored() ->
     ?assertEqual(not_found, Result).
 
 capture_gossip(Name, Gossip, Algorithm) ->
-    Group = {seki_limiters, list_to_atom("seki_limiter_" ++ atom_to_list(Name))},
+    Group = {seki_limiter, Name},
     ok = pg:join(seki_pg, Group, self()),
     try
         Gossip ! gossip,
@@ -390,3 +526,52 @@ gossip_limiter(Name, Algorithm) ->
 
 gossip_pid(State) when is_tuple(State) ->
     element(3, State).
+
+unexpected_messages_are_dropped() ->
+    {Gossip, _State} = gossip_limiter(pg_stray),
+    ?assertEqual(
+        ok, seki_unexpected_tests:dropped_by(Gossip, seki_pg_gossip, {error, unknown})
+    ),
+    seki:delete_limiter(pg_stray).
+
+malformed_gossip_is_dropped() ->
+    {Gossip, State} = gossip_limiter(pg_malformed, gcra),
+    Registry = whereis(seki_limiter_registry),
+    Tab = element(2, State),
+    [
+        gen_server:cast(Gossip, {seki_gossip, 2, gcra, parsed(Entries)})
+     || Entries <:- [
+            "[{improper, 100} | tail].",
+            "[not_an_entry, {after_a_stray, 100}].",
+            "[{'_', 100}, {'$1', 100}, {#{a => 1}, 100}, {{nested, ['$2']}, 100}].",
+            "[{'_', 200}, {after_a_pattern, 100}]."
+        ]
+    ],
+    _ = sys:get_state(Gossip),
+    ?assert(is_process_alive(Gossip)),
+    ?assertEqual(Registry, whereis(seki_limiter_registry)),
+    ?assertEqual(
+        [after_a_pattern, after_a_stray, improper],
+        lists:sort([Key || {Key, _TAT} <:- ets:tab2list(Tab)])
+    ),
+    seki:delete_limiter(pg_malformed).
+
+-spec parsed(string()) -> term().
+parsed(Text) ->
+    {ok, Tokens, _End} = erl_scan:string(Text),
+    {ok, Term} = erl_parse:parse_term(Tokens),
+    Term.
+
+invalid_options_are_refused() ->
+    Tables = length(ets:all()),
+    [
+        ?assertEqual({error, {invalid_option, Key}}, seki_backend_pg:init(#{Key => Value}))
+     || {Key, Value} <:- [
+            {scope, ~"seki_pg"},
+            {table_name, ~"seki_pg_data"},
+            {gossip_interval, 0},
+            {gossip_interval, 1.5},
+            {gossip_interval, never}
+        ]
+    ],
+    ?assertEqual(Tables, length(ets:all())).

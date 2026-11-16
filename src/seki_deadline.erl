@@ -46,20 +46,20 @@ set(TimeoutMs) ->
 -doc "Set an absolute deadline (monotonic time in ms).".
 -spec set_abs(integer()) -> ok.
 set_abs(Deadline) ->
-    case erlang:get(?DEADLINE_KEY) of
+    case deadline() of
         undefined ->
             erlang:put(?DEADLINE_KEY, Deadline),
             ok;
         Existing ->
             %% Take the tighter (earlier) deadline
-            erlang:put(?DEADLINE_KEY, min(Existing, Deadline)),
+            erlang:put(?DEADLINE_KEY, seki_number:smaller(Existing, Deadline)),
             ok
     end.
 
 -doc "Get the current deadline, or `undefined` if none is set.".
 -spec get() -> {ok, integer()} | undefined.
 get() ->
-    case erlang:get(?DEADLINE_KEY) of
+    case deadline() of
         undefined -> undefined;
         Deadline -> {ok, Deadline}
     end.
@@ -67,7 +67,7 @@ get() ->
 -doc "Check if the deadline has been reached. Returns `ok` if there is still time or no deadline is set.".
 -spec check() -> ok | {error, deadline_exceeded}.
 check() ->
-    case erlang:get(?DEADLINE_KEY) of
+    case deadline() of
         undefined ->
             ok;
         Deadline ->
@@ -81,12 +81,12 @@ check() ->
 -doc "Get the remaining time in milliseconds, or `infinity` if no deadline is set.".
 -spec time_remaining() -> non_neg_integer() | infinity.
 time_remaining() ->
-    case erlang:get(?DEADLINE_KEY) of
+    case deadline() of
         undefined ->
             infinity;
         Deadline ->
             Now = erlang:monotonic_time(millisecond),
-            max(0, Deadline - Now)
+            seki_number:larger(0, Deadline - Now)
     end.
 
 -doc "Check if the deadline has been reached (boolean).".
@@ -132,8 +132,12 @@ to_header() ->
         Remaining -> {ok, integer_to_binary(Remaining)}
     end.
 
--doc "Set a deadline from an HTTP header value (remaining ms as binary).".
--spec from_header(binary()) -> ok | {error, invalid_header}.
+-doc """
+Set a deadline from an HTTP header value (remaining ms as binary).
+
+Anything else, a missing header included, is `{error, invalid_header}`.
+""".
+-spec from_header(term()) -> ok | {error, invalid_header}.
 from_header(Value) when is_binary(Value) ->
     try binary_to_integer(Value) of
         Ms when Ms > 0 ->
@@ -158,4 +162,11 @@ propagate(TargetPid) ->
         {ok, Deadline} ->
             erlang:send(TargetPid, {seki_deadline_propagate, Deadline}),
             ok
+    end.
+
+-spec deadline() -> integer() | undefined.
+deadline() ->
+    case erlang:get(?DEADLINE_KEY) of
+        Deadline when is_integer(Deadline) -> Deadline;
+        undefined -> undefined
     end.

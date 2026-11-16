@@ -81,10 +81,7 @@ do_attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts) ->
         Result ->
             case RetryOn(Result) of
                 true when Attempt < MaxAttempts ->
-                    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
-                    emit_retry(Name, Attempt, Result, Delay, Opts),
-                    timer:sleep(Delay),
-                    attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Result);
+                    attempt_again(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, Result);
                 true ->
                     emit_exhausted(Name, Attempt, Result),
                     {error, Result};
@@ -102,15 +99,18 @@ do_attempt(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts) ->
             Error = {Class, Reason, Stacktrace},
             case RetryOn({error, Reason}) of
                 true when Attempt < MaxAttempts ->
-                    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
-                    emit_retry(Name, Attempt, Error, Delay, Opts),
-                    timer:sleep(Delay),
-                    attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Error);
+                    attempt_again(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, Error);
                 _ ->
                     emit_exhausted(Name, Attempt, Error),
                     {error, Error}
             end
     end.
+
+attempt_again(Name, Fun, Opts, RetryOn, Attempt, MaxAttempts, Failure) ->
+    Delay = cap_delay_to_deadline(compute_delay(Attempt, Opts)),
+    emit_retry(Name, Attempt, Failure, Delay, Opts),
+    timer:sleep(Delay),
+    attempt(Name, Fun, Opts, RetryOn, Attempt + 1, MaxAttempts, Failure).
 
 default_retry_on({error, _}) -> true;
 default_retry_on(_) -> false.
@@ -121,7 +121,7 @@ compute_delay(Attempt, Opts) ->
     MaxDelay = maps:get(max_delay, Opts, 30000),
     Jitter = maps:get(jitter, Opts, full),
     RawDelay = raw_delay(Backoff, BaseDelay, Attempt),
-    Capped = min(RawDelay, MaxDelay),
+    Capped = seki_number:smaller(RawDelay, MaxDelay),
     apply_jitter(Jitter, Capped, BaseDelay).
 
 raw_delay(constant, BaseDelay, _Attempt) ->
@@ -134,18 +134,20 @@ raw_delay(linear, BaseDelay, Attempt) ->
 cap_delay_to_deadline(Delay) ->
     case seki_deadline:time_remaining() of
         infinity -> Delay;
-        Remaining -> min(Delay, max(0, Remaining))
+        Remaining -> seki_number:smaller(Delay, seki_number:larger(0, Remaining))
     end.
 
 apply_jitter(none, Delay, _Base) ->
     Delay;
 apply_jitter(full, Delay, _Base) ->
-    rand:uniform(max(1, Delay));
+    rand:uniform(seki_number:larger(1, Delay));
 apply_jitter(equal, Delay, _Base) ->
-    Half = max(1, Delay div 2),
+    Half = seki_number:larger(1, Delay div 2),
     Half + rand:uniform(Half);
 apply_jitter(decorrelated, Delay, Base) ->
-    min(Delay, max(Base, rand:uniform(max(1, Delay * 3)))).
+    seki_number:smaller(
+        Delay, seki_number:larger(Base, rand:uniform(seki_number:larger(1, Delay * 3)))
+    ).
 
 %%----------------------------------------------------------------------
 %% Telemetry

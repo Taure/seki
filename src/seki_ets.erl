@@ -3,6 +3,7 @@
 
 -export([
     storage_key/1,
+    is_literal/1,
     lookup/2,
     insert/3,
     delete/2,
@@ -11,7 +12,8 @@
     local_update/3,
     update/4,
     apply_update_fun/3,
-    cleanup/2
+    cleanup/2,
+    cleanup_arrivals/1
 ]).
 
 -define(MAX_ATTEMPTS, 1000).
@@ -92,6 +94,15 @@ cleanup(Tab, OlderThan) ->
     ]),
     ok.
 
+%% A row of a `gcra` limiter is the time its key is free again. Once that
+%% time has passed the row says what no row says, so it can go whatever the
+%% window of the limiter is.
+-spec cleanup_arrivals(ets:table()) -> ok.
+cleanup_arrivals(Tab) ->
+    Now = erlang:monotonic_time(millisecond),
+    _ = ets:select_delete(Tab, [{{'_', '$1'}, [{is_number, '$1'}, {'<', '$1', Now}], [true]}]),
+    ok.
+
 local_update(_Tab, _Key, _Step, 0) ->
     {error, contention};
 local_update(Tab, Key, Step, Attempts) ->
@@ -134,6 +145,7 @@ swap_spec(StorageKey, OldValue, NewValue) ->
 escape(Key) ->
     {seki_escaped_key, term_to_binary(Key, [deterministic])}.
 
+-spec is_literal(term()) -> boolean().
 is_literal('_') ->
     false;
 is_literal(Term) when is_atom(Term) ->
